@@ -30,7 +30,9 @@ impl AccountSubscriptions {
     }
 
     /// Synchronous check for use in the geyser callback (non-async context).
-    /// Lock-free check against DashSet, always returns accurate result without blocking.
+    /// Uses DashSet::contains to check membership. This method acquires a read lock
+    /// on the shard and may block if a concurrent write operation holds the shard's lock.
+    /// Suitable for synchronous use but not strictly lock-free.
     pub fn contains_sync(&self, pubkey: &[u8; 32]) -> bool {
         self.inner.contains(pubkey)
     }
