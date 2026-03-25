@@ -2,12 +2,15 @@ use {
     bytes::Bytes,
     dashmap::DashSet,
     http::StatusCode,
-    http_body_util::Full,
+    http_body_util::{Full, Limited},
     hyper::{Request, Response, body::Incoming},
     log::*,
     solana_pubkey::Pubkey,
     std::{str::FromStr, sync::Arc},
 };
+
+/// Maximum request body size: 1 MiB
+const MAX_BODY_SIZE: usize = 1024 * 1024;
 
 /// Shared dynamic account filter state.
 /// Clone-cheap (Arc); uses DashSet for lock-free concurrent access.
@@ -71,7 +74,7 @@ pub async fn handle_post_accounts(
     subs: AccountSubscriptions,
 ) -> Response<Full<Bytes>> {
     use http_body_util::BodyExt;
-    let body_bytes = match req.collect().await {
+    let body_bytes = match Limited::new(req.into_body(), MAX_BODY_SIZE).collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("body read error: {e}")),
     };
