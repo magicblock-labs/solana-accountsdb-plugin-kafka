@@ -44,7 +44,7 @@ impl AccountSubscriptions {
     }
 
     /// Add pubkeys, return new total count.
-    pub async fn add<I: IntoIterator<Item = [u8; 32]>>(&self, pubkeys: I) -> usize {
+    pub fn add<I: IntoIterator<Item = [u8; 32]>>(&self, pubkeys: I) -> usize {
         for pk in pubkeys {
             self.inner.insert(pk);
         }
@@ -100,7 +100,7 @@ pub async fn handle_post_accounts(
         }
     }
 
-    let active_count = subs.add(keys).await;
+    let active_count = subs.add(keys);
     info!(
         "Added {} pubkeys, active_count={active_count}",
         parsed.pubkeys.len()
