@@ -25,9 +25,9 @@ impl HttpService {
         prom::register_metrics();
 
         let runtime = Runtime::new()?;
-        runtime.spawn(async move {
-            let listener = TcpListener::bind(address).await.unwrap();
+        let listener = runtime.block_on(TcpListener::bind(address))?;
 
+        runtime.spawn(async move {
             loop {
                 let (stream, _) = match listener.accept().await {
                     Ok(conn) => conn,
