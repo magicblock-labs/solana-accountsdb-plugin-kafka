@@ -107,12 +107,48 @@ pub async fn handle_post_accounts(
 }
 
 fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response<Full<Bytes>> {
-    let json = serde_json::to_vec(body).unwrap();
-    Response::builder()
+    let json = match serde_json::to_vec(body) {
+        Ok(j) => j,
+        Err(e) => {
+            error!("failed to serialize JSON response: {e}");
+            return error_500();
+        }
+    };
+
+    match Response::builder()
         .status(status)
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(json)))
-        .unwrap()
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("failed to build response: {e}");
+            error_500()
+        }
+    }
+}
+
+fn error_500() -> Response<Full<Bytes>> {
+    match Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(
+            r#"{"error":"internal server error"}"#,
+        ))) {
+        Ok(resp) => resp,
+        Err(_) => {
+            // Fallback: minimal response without headers
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Full::new(Bytes::new()))
+                .unwrap_or_else(|_| {
+                    // Final fallback: bare 500 response
+                    let (mut parts, _) = Response::new(Full::new(Bytes::new())).into_parts();
+                    parts.status = StatusCode::INTERNAL_SERVER_ERROR;
+                    Response::from_parts(parts, Full::new(Bytes::new()))
+                })
+        }
+    }
 }
 
 fn error_response(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
