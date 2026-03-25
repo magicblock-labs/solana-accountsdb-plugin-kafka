@@ -77,8 +77,21 @@ async fn route(req: Request<Incoming>, subs: AccountSubscriptions) -> Response<F
 }
 
 fn not_found() -> Response<Full<Bytes>> {
-    Response::builder()
+    match Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Full::new(Bytes::from("")))
-        .unwrap()
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("failed to build not found response: {e}");
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Full::new(Bytes::new()))
+                .unwrap_or_else(|_| {
+                    let (mut parts, _) = Response::new(Full::new(Bytes::new())).into_parts();
+                    parts.status = StatusCode::NOT_FOUND;
+                    Response::from_parts(parts, Full::new(Bytes::new()))
+                })
+        }
+    }
 }
