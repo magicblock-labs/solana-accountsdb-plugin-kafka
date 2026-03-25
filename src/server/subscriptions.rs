@@ -36,7 +36,7 @@ impl AccountSubscriptions {
     }
 
     /// Add pubkeys, return new total count.
-    pub async fn add(&self, pubkeys: Vec<[u8; 32]>) -> usize {
+    pub async fn add<I: IntoIterator<Item = [u8; 32]>>(&self, pubkeys: I) -> usize {
         for pk in pubkeys {
             self.inner.insert(pk);
         }
