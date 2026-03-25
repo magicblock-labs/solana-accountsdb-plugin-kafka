@@ -79,7 +79,19 @@ pub async fn handle_post_accounts(
     use http_body_util::BodyExt;
     let body_bytes = match Limited::new(req.into_body(), MAX_BODY_SIZE).collect().await {
         Ok(collected) => collected.to_bytes(),
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("body read error: {e}")),
+        Err(e) => {
+            return if e
+                .downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some()
+            {
+                error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &format!("body exceeds max size of {MAX_BODY_SIZE} bytes"),
+                )
+            } else {
+                error_response(StatusCode::BAD_REQUEST, &format!("body read error: {e}"))
+            };
+        }
     };
 
     let parsed: AddAccountsRequest = match serde_json::from_slice(&body_bytes) {
