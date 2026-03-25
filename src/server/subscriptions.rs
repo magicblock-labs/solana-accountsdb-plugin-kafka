@@ -12,8 +12,11 @@ use {
 /// Maximum request body size: 1 MiB
 const MAX_BODY_SIZE: usize = 1024 * 1024;
 
-/// Shared dynamic account filter state.
-/// Clone-cheap (Arc); uses DashSet for lock-free concurrent access.
+/// Shared dynamic account filter state backed by Arc<DashSet<[u8; 32]>>.
+/// Clone-cheap (Arc); uses DashSet's fine-grained sharded locking for concurrent access.
+/// Operations may acquire shard-level read/write locks and can block if concurrent
+/// operations hold the shard's lock. Not strictly lock-free, but provides better
+/// concurrency than a single global lock via per-shard locking.
 #[derive(Clone)]
 pub struct AccountSubscriptions {
     inner: Arc<DashSet<[u8; 32]>>,
