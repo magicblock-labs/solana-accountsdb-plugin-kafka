@@ -1,19 +1,19 @@
 use {
     bytes::Bytes,
+    dashmap::DashSet,
     http::StatusCode,
     http_body_util::Full,
     hyper::{Request, Response, body::Incoming},
     log::*,
     solana_pubkey::Pubkey,
-    std::{collections::HashSet, str::FromStr, sync::Arc},
-    tokio::sync::RwLock,
+    std::{str::FromStr, sync::Arc},
 };
 
 /// Shared dynamic account filter state.
-/// Clone-cheap (Arc); the inner RwLock is read-biased for the hot path.
+/// Clone-cheap (Arc); uses DashSet for lock-free concurrent access.
 #[derive(Clone)]
 pub struct AccountSubscriptions {
-    inner: Arc<RwLock<HashSet<[u8; 32]>>>,
+    inner: Arc<DashSet<[u8; 32]>>,
 }
 
 impl Default for AccountSubscriptions {
@@ -25,28 +25,22 @@ impl Default for AccountSubscriptions {
 impl AccountSubscriptions {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(HashSet::new())),
+            inner: Arc::new(DashSet::new()),
         }
     }
 
     /// Synchronous check for use in the geyser callback (non-async context).
-    /// Uses `try_read` to avoid blocking the validator replay thread.
-    /// If the lock is currently held by a writer, returns false (miss one update
-    /// rather than block the validator).
+    /// Lock-free check against DashSet, always returns accurate result without blocking.
     pub fn contains_sync(&self, pubkey: &[u8; 32]) -> bool {
-        match self.inner.try_read() {
-            Ok(guard) => guard.contains(pubkey),
-            Err(_) => false,
-        }
+        self.inner.contains(pubkey)
     }
 
     /// Add pubkeys, return new total count.
     pub async fn add(&self, pubkeys: Vec<[u8; 32]>) -> usize {
-        let mut set = self.inner.write().await;
         for pk in pubkeys {
-            set.insert(pk);
+            self.inner.insert(pk);
         }
-        set.len()
+        self.inner.len()
     }
 }
 
