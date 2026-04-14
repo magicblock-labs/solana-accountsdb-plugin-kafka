@@ -1,8 +1,12 @@
 use {
-    crate::{AccountSubscriptions, Filter, Publisher},
+    crate::{AccountSubscriptions, Filter, Publisher, UpdateAccountEvent},
     dashmap::DashMap,
     log::*,
-    std::sync::Arc,
+    solana_account::Account,
+    solana_commitment_config::CommitmentConfig,
+    solana_pubkey::{Pubkey, pubkey},
+    solana_rpc_client::nonblocking::rpc_client::RpcClient,
+    std::{io, sync::Arc},
     tokio::{
         runtime::Runtime,
         sync::mpsc::{self, error::TrySendError},
@@ -26,7 +30,7 @@ impl InitialAccountBackfill {
         filters: Arc<Vec<Filter>>,
         subscriptions: AccountSubscriptions,
         local_rpc_url: String,
-    ) -> std::io::Result<Self> {
+    ) -> io::Result<Self> {
         let runtime = Runtime::new()?;
         let (tx, mut rx) = mpsc::channel(INITIAL_BACKFILL_QUEUE_CAPACITY);
         let inner = Arc::new(InitialAccountBackfillInner {
@@ -35,7 +39,7 @@ impl InitialAccountBackfill {
             _publisher: Some(publisher),
             _filters: filters,
             _subscriptions: subscriptions,
-            _local_rpc_url: local_rpc_url,
+            client: RpcClient::new_with_commitment(local_rpc_url, CommitmentConfig::confirmed()),
         });
         let handle = InitialAccountBackfillHandle {
             inner: inner.clone(),
@@ -43,10 +47,25 @@ impl InitialAccountBackfill {
 
         runtime.spawn(async move {
             while let Some(request) = rx.recv().await {
-                debug!(
-                    "Drained initial account backfill request for {} pubkeys",
-                    request.pubkeys.len()
-                );
+                match inner
+                    .fetch_account_events_for_request(&request.pubkeys)
+                    .await
+                {
+                    Ok(events) => {
+                        debug!(
+                            "Fetched {} initial account backfill snapshots for {} pubkeys",
+                            events.len(),
+                            request.pubkeys.len()
+                        );
+                    }
+                    Err(error) => {
+                        error!(
+                            "Initial account backfill RPC fetch failed for {} pubkeys: {error}",
+                            request.pubkeys.len()
+                        );
+                    }
+                }
+
                 for pubkey in request.pubkeys {
                     inner.in_flight.remove(&pubkey);
                 }
@@ -62,15 +81,7 @@ impl InitialAccountBackfill {
     pub fn handle(&self) -> InitialAccountBackfillHandle {
         self.handle.clone()
     }
-}
 
-impl Default for InitialAccountBackfill {
-    fn default() -> Self {
-        Self::new_disabled()
-    }
-}
-
-impl InitialAccountBackfill {
     fn new_disabled() -> Self {
         let (tx, _rx) = mpsc::channel(1);
         let inner = Arc::new(InitialAccountBackfillInner {
@@ -79,12 +90,18 @@ impl InitialAccountBackfill {
             _publisher: None,
             _filters: Arc::new(Vec::new()),
             _subscriptions: AccountSubscriptions::new(),
-            _local_rpc_url: String::new(),
+            client: RpcClient::new_with_commitment(String::new(), CommitmentConfig::confirmed()),
         });
         Self {
             handle: InitialAccountBackfillHandle { inner },
             runtime: None,
         }
+    }
+}
+
+impl Default for InitialAccountBackfill {
+    fn default() -> Self {
+        Self::new_disabled()
     }
 }
 
@@ -140,7 +157,7 @@ impl InitialAccountBackfillHandle {
 
     pub fn mark_live_update_seen(&self, pubkey: &[u8; 32]) {
         if let Some(mut entry) = self.inner.in_flight.get_mut(pubkey) {
-            entry._live_seen = true;
+            entry.live_seen = true;
         }
     }
 
@@ -158,7 +175,7 @@ pub struct EnqueueResult {
 
 #[derive(Default)]
 struct InFlightBackfill {
-    _live_seen: bool,
+    live_seen: bool,
 }
 
 struct BackfillRequest {
@@ -171,5 +188,86 @@ struct InitialAccountBackfillInner {
     _publisher: Option<Arc<Publisher>>,
     _filters: Arc<Vec<Filter>>,
     _subscriptions: AccountSubscriptions,
-    _local_rpc_url: String,
+    client: RpcClient,
+}
+
+impl InitialAccountBackfillInner {
+    async fn fetch_account_events_for_request(
+        &self,
+        pubkeys: &[[u8; 32]],
+    ) -> io::Result<Vec<UpdateAccountEvent>> {
+        let mut events = Vec::with_capacity(pubkeys.len());
+        for chunk in pubkeys.chunks(INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST) {
+            events.extend(self.fetch_account_events_for_chunk(chunk).await?);
+        }
+        Ok(events)
+    }
+
+    async fn fetch_account_events_for_chunk(
+        &self,
+        pubkeys: &[[u8; 32]],
+    ) -> io::Result<Vec<UpdateAccountEvent>> {
+        let keys = pubkeys
+            .iter()
+            .map(|pubkey| Pubkey::new_from_array(*pubkey))
+            .collect::<Vec<_>>();
+        let response = self
+            .client
+            .get_multiple_accounts_with_commitment(&keys, CommitmentConfig::confirmed())
+            .await
+            .map_err(io::Error::other)?;
+
+        if response.value.len() != pubkeys.len() {
+            return Err(io::Error::other(format!(
+                "rpc returned {} accounts for {} requested pubkeys",
+                response.value.len(),
+                pubkeys.len()
+            )));
+        }
+
+        Ok(pubkeys
+            .iter()
+            .zip(response.value.into_iter())
+            .map(|(pubkey, maybe_account)| match maybe_account {
+                Some(account) => map_existing_account(account, response.context.slot, *pubkey),
+                None => map_missing_account(response.context.slot, *pubkey),
+            })
+            .collect())
+    }
+}
+
+const SYSTEM_PROGRAM_ID: Pubkey = pubkey!("11111111111111111111111111111111");
+
+fn map_existing_account(account: Account, slot: u64, pubkey: [u8; 32]) -> UpdateAccountEvent {
+    UpdateAccountEvent {
+        slot,
+        pubkey: pubkey.to_vec(),
+        lamports: account.lamports,
+        owner: account.owner.to_bytes().to_vec(),
+        executable: account.executable,
+        rent_epoch: account.rent_epoch,
+        data: account.data,
+        write_version: 0,
+        txn_signature: None,
+        data_version: 0,
+        is_startup: false,
+        account_age: 0,
+    }
+}
+
+fn map_missing_account(slot: u64, pubkey: [u8; 32]) -> UpdateAccountEvent {
+    UpdateAccountEvent {
+        slot,
+        pubkey: pubkey.to_vec(),
+        lamports: 0,
+        owner: SYSTEM_PROGRAM_ID.to_bytes().to_vec(),
+        executable: false,
+        rent_epoch: 0,
+        data: Vec::new(),
+        write_version: 0,
+        txn_signature: None,
+        data_version: 0,
+        is_startup: false,
+        account_age: 0,
+    }
 }
