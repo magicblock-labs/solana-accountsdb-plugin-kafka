@@ -268,3 +268,57 @@ fn error_response(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
         },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AccountSubscriptions;
+
+    fn pk(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    #[test]
+    fn empty_add_keeps_counts_zero() {
+        let subs = AccountSubscriptions::new();
+
+        let result = subs.add(Vec::<[u8; 32]>::new());
+
+        assert_eq!(result.active_count, 0);
+        assert!(result.newly_added.is_empty());
+        assert_eq!(result.duplicate_count, 0);
+    }
+
+    #[test]
+    fn all_new_pubkeys_are_reported_as_newly_added() {
+        let subs = AccountSubscriptions::new();
+
+        let result = subs.add(vec![pk(1), pk(2), pk(3)]);
+
+        assert_eq!(result.active_count, 3);
+        assert_eq!(result.newly_added, vec![pk(1), pk(2), pk(3)]);
+        assert_eq!(result.duplicate_count, 0);
+    }
+
+    #[test]
+    fn duplicate_pubkeys_within_request_are_counted_once() {
+        let subs = AccountSubscriptions::new();
+
+        let result = subs.add(vec![pk(1), pk(1), pk(2), pk(2), pk(2)]);
+
+        assert_eq!(result.active_count, 2);
+        assert_eq!(result.newly_added, vec![pk(1), pk(2)]);
+        assert_eq!(result.duplicate_count, 3);
+    }
+
+    #[test]
+    fn readding_existing_pubkeys_counts_as_duplicates() {
+        let subs = AccountSubscriptions::new();
+        let _ = subs.add(vec![pk(1), pk(2)]);
+
+        let result = subs.add(vec![pk(2), pk(3), pk(3)]);
+
+        assert_eq!(result.active_count, 3);
+        assert_eq!(result.newly_added, vec![pk(3)]);
+        assert_eq!(result.duplicate_count, 2);
+    }
+}

@@ -414,3 +414,150 @@ fn map_missing_account(slot: u64, pubkey: [u8; 32]) -> UpdateAccountEvent {
         account_age: 0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use {super::*, tokio::sync::mpsc};
+
+    fn pk(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    fn test_inner(
+        channel_capacity: usize,
+    ) -> (
+        Arc<InitialAccountBackfillInner>,
+        mpsc::Receiver<BackfillRequest>,
+    ) {
+        let (tx, rx) = mpsc::channel(channel_capacity);
+        (
+            Arc::new(InitialAccountBackfillInner {
+                tx,
+                in_flight: DashMap::new(),
+                publisher: None,
+                filters: Arc::new(Vec::new()),
+                subscriptions: AccountSubscriptions::new(),
+                client: RpcClient::new_with_commitment(
+                    String::new(),
+                    CommitmentConfig::confirmed(),
+                ),
+            }),
+            rx,
+        )
+    }
+
+    #[test]
+    fn existing_account_maps_to_expected_update_event() {
+        let event = map_existing_account(
+            Account {
+                lamports: 42,
+                data: vec![1, 2, 3],
+                owner: Pubkey::new_from_array(pk(9)),
+                executable: true,
+                rent_epoch: 7,
+            },
+            99,
+            pk(1),
+        );
+
+        assert_eq!(event.slot, 99);
+        assert_eq!(event.pubkey, pk(1).to_vec());
+        assert_eq!(event.lamports, 42);
+        assert_eq!(event.owner, pk(9).to_vec());
+        assert!(event.executable);
+        assert_eq!(event.rent_epoch, 7);
+        assert_eq!(event.data, vec![1, 2, 3]);
+        assert_eq!(event.write_version, 0);
+        assert_eq!(event.txn_signature, None);
+        assert_eq!(event.data_version, 0);
+        assert!(!event.is_startup);
+        assert_eq!(event.account_age, 0);
+    }
+
+    #[test]
+    fn missing_account_maps_to_sentinel_event() {
+        let event = map_missing_account(55, pk(2));
+
+        assert_eq!(event.slot, 55);
+        assert_eq!(event.pubkey, pk(2).to_vec());
+        assert_eq!(event.lamports, 0);
+        assert_eq!(event.owner, SYSTEM_PROGRAM_ID.to_bytes().to_vec());
+        assert!(!event.executable);
+        assert_eq!(event.rent_epoch, 0);
+        assert!(event.data.is_empty());
+        assert_eq!(event.write_version, 0);
+        assert_eq!(event.txn_signature, None);
+        assert_eq!(event.data_version, 0);
+        assert!(!event.is_startup);
+        assert_eq!(event.account_age, 0);
+    }
+
+    #[test]
+    fn enqueue_marks_pubkeys_in_flight() {
+        let (inner, _rx) = test_inner(4);
+        let handle = InitialAccountBackfillHandle { inner };
+
+        let result = handle.enqueue(vec![pk(1), pk(2)]);
+
+        assert!(result.accepted);
+        assert!(!result.queue_full);
+        assert!(handle.inner.in_flight.contains_key(&pk(1)));
+        assert!(handle.inner.in_flight.contains_key(&pk(2)));
+    }
+
+    #[test]
+    fn mark_live_update_seen_flips_in_flight_state() {
+        let (inner, _rx) = test_inner(4);
+        let handle = InitialAccountBackfillHandle { inner };
+        let pubkey = pk(3);
+        let _ = handle.enqueue(vec![pubkey]);
+
+        handle.mark_live_update_seen(&pubkey);
+
+        assert!(
+            handle
+                .inner
+                .in_flight
+                .get(&pubkey)
+                .expect("missing in-flight entry")
+                .live_seen
+        );
+    }
+
+    #[test]
+    fn complete_backfill_event_suppresses_when_live_update_won_race() {
+        let (inner, _rx) = test_inner(4);
+        let handle = InitialAccountBackfillHandle {
+            inner: inner.clone(),
+        };
+        let pubkey = pk(4);
+        let _ = handle.enqueue(vec![pubkey]);
+        handle.mark_live_update_seen(&pubkey);
+
+        let result = inner.complete_backfill_event(map_missing_account(1, pubkey));
+
+        assert!(result.is_ok());
+        assert!(!inner.in_flight.contains_key(&pubkey));
+    }
+
+    #[test]
+    fn enqueue_failure_cleans_up_temporary_in_flight_markers() {
+        let (inner, mut rx) = test_inner(1);
+        inner
+            .tx
+            .try_send(BackfillRequest {
+                pubkeys: vec![pk(8)],
+            })
+            .expect("failed to prefill queue");
+        let handle = InitialAccountBackfillHandle { inner };
+
+        let result = handle.enqueue(vec![pk(9), pk(10)]);
+
+        assert!(!result.accepted);
+        assert!(result.queue_full);
+        assert!(!handle.inner.in_flight.contains_key(&pk(9)));
+        assert!(!handle.inner.in_flight.contains_key(&pk(10)));
+
+        drop(rx.try_recv());
+    }
+}
