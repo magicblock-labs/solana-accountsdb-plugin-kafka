@@ -373,9 +373,10 @@ impl KafkaPlugin {
         let mut first_error = None;
 
         for event in updates {
+            let publish = self.should_publish_account(&event);
             let mut matched_any_filter = false;
             for filter in filters {
-                if filter.update_account_topic.is_empty() || !self.should_publish_account(&event) {
+                if filter.update_account_topic.is_empty() || !publish {
                     continue;
                 }
 

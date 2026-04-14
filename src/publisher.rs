@@ -21,7 +21,7 @@ use {
             UPLOAD_TRANSACTIONS_TOTAL,
         },
     },
-    log::info,
+    log::{debug, error},
     prost::Message,
     rdkafka::{
         error::KafkaError,
@@ -59,18 +59,26 @@ impl Publisher {
             temp_key = self.copy_and_prepend(ev.pubkey.as_slice(), b'A');
             (&temp_key, ev.encode_to_vec())
         };
-        info!("key: {:?}", key);
         let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
         let result = self.producer.send(record).map(|_| ()).map_err(|(e, _)| e);
-        match log_pubkey {
-            Some(pubkey) => info!(
-                "Published account update for pubkey: {} with key {:?}",
-                pubkey, key
-            ),
-            None => info!(
-                "Published account update with invalid pubkey bytes and key {:?}",
-                key
-            ),
+        match &result {
+            Ok(()) => match log_pubkey {
+                Some(pubkey) => debug!(
+                    "Published account update for pubkey: {} with key {:?}",
+                    pubkey, key
+                ),
+                None => debug!(
+                    "Published account update with invalid pubkey bytes and key {:?}",
+                    key
+                ),
+            },
+            Err(e) => match log_pubkey {
+                Some(pubkey) => error!(
+                    "Failed to publish account update for pubkey: {}: {}",
+                    pubkey, e
+                ),
+                None => error!("Failed to publish account update: {}", e),
+            },
         }
         UPLOAD_ACCOUNTS_TOTAL
             .with_label_values(&[if result.is_ok() { "success" } else { "failed" }])

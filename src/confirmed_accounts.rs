@@ -259,11 +259,20 @@ impl ConfirmedAccounts {
             })
             .collect();
 
-        for slot in &victims {
+        if !victims.is_empty() {
+            let min = victims.iter().min().unwrap();
+            let max = victims.iter().max().unwrap();
             warn!(
-                "evicting stale unconfirmed slot {} (cutoff {}, highest observed {})",
-                slot, cutoff, self.highest_observed_slot
+                "evicting {} stale unconfirmed slots (range {}..={}, cutoff {}, highest observed {})",
+                victims.len(),
+                min,
+                max,
+                cutoff,
+                self.highest_observed_slot
             );
+        }
+
+        for slot in &victims {
             self.pending_updates.remove(slot);
         }
 
