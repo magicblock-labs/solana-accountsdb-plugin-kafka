@@ -198,6 +198,12 @@ pub async fn handle_post_accounts(
         );
     }
 
+    info!(
+        "Enqueued initial account backfill for newly added pubkeys, newly_added_count={}, active_count={}",
+        result.newly_added.len(),
+        result.active_count
+    );
+
     json_response(
         StatusCode::OK,
         &AccountsResponse {
