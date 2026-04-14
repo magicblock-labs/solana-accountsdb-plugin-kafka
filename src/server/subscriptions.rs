@@ -6,7 +6,7 @@ use {
     hyper::{Request, Response, body::Incoming},
     log::*,
     solana_pubkey::Pubkey,
-    std::{str::FromStr, sync::Arc},
+    std::{collections::HashSet, str::FromStr, sync::Arc},
 };
 
 /// Maximum request body size: 1 MiB
@@ -43,13 +43,37 @@ impl AccountSubscriptions {
         self.inner.contains(pubkey)
     }
 
-    /// Add pubkeys, return new total count.
-    pub fn add<I: IntoIterator<Item = [u8; 32]>>(&self, pubkeys: I) -> usize {
+    /// Add pubkeys and report how many were newly inserted versus duplicates.
+    pub fn add<I: IntoIterator<Item = [u8; 32]>>(&self, pubkeys: I) -> AddAccountsResult {
+        let mut newly_added = Vec::new();
+        let mut request_seen = HashSet::new();
+        let mut duplicate_count = 0;
+
         for pk in pubkeys {
-            self.inner.insert(pk);
+            if !request_seen.insert(pk) {
+                duplicate_count += 1;
+                continue;
+            }
+
+            if self.inner.insert(pk) {
+                newly_added.push(pk);
+            } else {
+                duplicate_count += 1;
+            }
         }
-        self.inner.len()
+
+        AddAccountsResult {
+            active_count: self.inner.len(),
+            newly_added,
+            duplicate_count,
+        }
     }
+}
+
+pub struct AddAccountsResult {
+    pub active_count: usize,
+    pub newly_added: Vec<[u8; 32]>,
+    pub duplicate_count: usize,
 }
 
 // ----- REST handler -----
@@ -64,6 +88,9 @@ struct AddAccountsRequest {
 #[derive(serde::Serialize)]
 struct AccountsResponse {
     active_count: usize,
+    accepted_count: usize,
+    newly_added_count: usize,
+    duplicate_count: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -112,13 +139,26 @@ pub async fn handle_post_accounts(
         }
     }
 
-    let active_count = subs.add(keys);
+    let accepted_count = keys.len();
+    let result = subs.add(keys);
     info!(
-        "Added {} pubkeys, active_count={active_count}",
-        parsed.pubkeys.len()
+        "Processed {} pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+        parsed.pubkeys.len(),
+        accepted_count,
+        result.newly_added.len(),
+        result.duplicate_count,
+        result.active_count
     );
 
-    json_response(StatusCode::OK, &AccountsResponse { active_count })
+    json_response(
+        StatusCode::OK,
+        &AccountsResponse {
+            active_count: result.active_count,
+            accepted_count,
+            newly_added_count: result.newly_added.len(),
+            duplicate_count: result.duplicate_count,
+        },
+    )
 }
 
 fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response<Full<Bytes>> {
