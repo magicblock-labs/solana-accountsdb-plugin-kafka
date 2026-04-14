@@ -143,13 +143,6 @@ pub async fn handle_post_accounts(
 
     let accepted_count = keys.len();
     let result = subs.add(keys);
-    let enqueue_result = initial_account_backfill.enqueue(result.newly_added.clone());
-    if !enqueue_result.accepted {
-        warn!(
-            "Initial account backfill enqueue failed before Phase 6 response handling, queue_full={}",
-            enqueue_result.queue_full
-        );
-    }
     info!(
         "Processed {} pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
         parsed.pubkeys.len(),
@@ -158,6 +151,52 @@ pub async fn handle_post_accounts(
         result.duplicate_count,
         result.active_count
     );
+
+    if result.newly_added.is_empty() {
+        return json_response(
+            StatusCode::OK,
+            &AccountsResponse {
+                active_count: result.active_count,
+                accepted_count,
+                newly_added_count: 0,
+                duplicate_count: result.duplicate_count,
+            },
+        );
+    }
+
+    let enqueue_result = initial_account_backfill.enqueue(result.newly_added.clone());
+    if enqueue_result.queue_full {
+        warn!(
+            "Initial account backfill queue full after subscribing pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+            accepted_count,
+            result.newly_added.len(),
+            result.duplicate_count,
+            result.active_count
+        );
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &AccountsResponse {
+                active_count: result.active_count,
+                accepted_count,
+                newly_added_count: result.newly_added.len(),
+                duplicate_count: result.duplicate_count,
+            },
+        );
+    }
+
+    if !enqueue_result.accepted {
+        error!(
+            "Initial account backfill enqueue failed unexpectedly after subscribing pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+            accepted_count,
+            result.newly_added.len(),
+            result.duplicate_count,
+            result.active_count
+        );
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to enqueue initial account backfill",
+        );
+    }
 
     json_response(
         StatusCode::OK,
