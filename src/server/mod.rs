@@ -2,6 +2,7 @@ pub mod prom;
 pub mod subscriptions;
 
 use {
+    crate::InitialAccountBackfillHandle,
     bytes::Bytes,
     http::StatusCode,
     http_body_util::Full,
@@ -21,7 +22,11 @@ pub struct HttpService {
 }
 
 impl HttpService {
-    pub fn new(address: SocketAddr, subs: AccountSubscriptions) -> IoResult<Self> {
+    pub fn new(
+        address: SocketAddr,
+        subs: AccountSubscriptions,
+        initial_account_backfill: InitialAccountBackfillHandle,
+    ) -> IoResult<Self> {
         prom::register_metrics();
 
         let runtime = Runtime::new()?;
@@ -39,11 +44,13 @@ impl HttpService {
 
                 let io = TokioIo::new(stream);
                 let subs = subs.clone();
+                let initial_account_backfill = initial_account_backfill.clone();
 
                 let service = service_fn(move |req: Request<Incoming>| {
                     let subs = subs.clone();
+                    let initial_account_backfill = initial_account_backfill.clone();
                     async move {
-                        let response = route(req, subs).await;
+                        let response = route(req, subs, initial_account_backfill).await;
                         Ok::<_, hyper::Error>(response)
                     }
                 });
@@ -66,11 +73,15 @@ impl HttpService {
     }
 }
 
-async fn route(req: Request<Incoming>, subs: AccountSubscriptions) -> Response<Full<Bytes>> {
+async fn route(
+    req: Request<Incoming>,
+    subs: AccountSubscriptions,
+    initial_account_backfill: InitialAccountBackfillHandle,
+) -> Response<Full<Bytes>> {
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/metrics") => metrics_handler(),
         (&Method::POST, "/filters/accounts") => {
-            subscriptions::handle_post_accounts(req, subs).await
+            subscriptions::handle_post_accounts(req, subs, initial_account_backfill).await
         }
         _ => not_found(),
     }

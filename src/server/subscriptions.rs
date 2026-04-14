@@ -1,4 +1,5 @@
 use {
+    crate::InitialAccountBackfillHandle,
     bytes::Bytes,
     dashmap::DashSet,
     http::StatusCode,
@@ -102,6 +103,7 @@ struct ErrorResponse {
 pub async fn handle_post_accounts(
     req: Request<Incoming>,
     subs: AccountSubscriptions,
+    initial_account_backfill: InitialAccountBackfillHandle,
 ) -> Response<Full<Bytes>> {
     use http_body_util::BodyExt;
     let body_bytes = match Limited::new(req.into_body(), MAX_BODY_SIZE).collect().await {
@@ -141,6 +143,9 @@ pub async fn handle_post_accounts(
 
     let accepted_count = keys.len();
     let result = subs.add(keys);
+    let enqueue_result = initial_account_backfill.enqueue(result.newly_added.clone());
+    debug_assert!(enqueue_result.accepted);
+    debug_assert!(!enqueue_result.queue_full);
     info!(
         "Processed {} pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
         parsed.pubkeys.len(),

@@ -15,11 +15,12 @@
 use {
     crate::{
         BlockEvent, CompiledInstruction, Config, ConfirmedAccounts, Filter, HttpService,
-        InnerInstruction, InnerInstructions, LegacyLoadedMessage, LegacyMessage, LoadedAddresses,
-        MessageAddressTableLookup, MessageHeader, Publisher, Reward, RewardsAndNumPartitions,
-        SanitizedMessage, SanitizedTransaction, SlotStatus, SlotStatusEvent, TransactionEvent,
-        TransactionStatusMeta, TransactionTokenBalance, UiTokenAmount, UpdateAccountEvent,
-        V0LoadedMessage, V0Message, sanitized_message, server::subscriptions::AccountSubscriptions,
+        InitialAccountBackfillHandle, InnerInstruction, InnerInstructions, LegacyLoadedMessage,
+        LegacyMessage, LoadedAddresses, MessageAddressTableLookup, MessageHeader, Publisher,
+        Reward, RewardsAndNumPartitions, SanitizedMessage, SanitizedTransaction, SlotStatus,
+        SlotStatusEvent, TransactionEvent, TransactionStatusMeta, TransactionTokenBalance,
+        UiTokenAmount, UpdateAccountEvent, V0LoadedMessage, V0Message, sanitized_message,
+        server::subscriptions::AccountSubscriptions,
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPlugin, GeyserPluginError as PluginError, ReplicaAccountInfoV3,
@@ -32,17 +33,18 @@ use {
     solana_pubkey::{Pubkey, pubkey},
     std::{
         fmt::{Debug, Formatter},
-        sync::{Mutex, MutexGuard},
+        sync::{Arc, Mutex, MutexGuard},
     },
 };
 
 #[derive(Default)]
 pub struct KafkaPlugin {
-    publisher: Option<Publisher>,
-    filter: Option<Vec<Filter>>,
+    publisher: Option<Arc<Publisher>>,
+    filter: Option<Arc<Vec<Filter>>>,
     block_events_topic: Option<(String, bool)>,
     http_service: Option<HttpService>,
     account_subscriptions: AccountSubscriptions,
+    initial_account_backfill: InitialAccountBackfillHandle,
     confirmed_accounts: Mutex<ConfirmedAccounts>,
 }
 
@@ -79,13 +81,19 @@ impl GeyserPlugin for KafkaPlugin {
         })?;
         info!("Created rdkafka::FutureProducer");
 
-        let publisher = Publisher::new(producer, &config);
+        let publisher = Arc::new(Publisher::new(producer, &config));
+        let filters = Arc::new(config.filters.iter().map(Filter::new).collect());
+        let initial_account_backfill = InitialAccountBackfillHandle::new_noop();
         let http_service = config
-            .create_http_service(self.account_subscriptions.clone())
+            .create_http_service(
+                self.account_subscriptions.clone(),
+                initial_account_backfill.clone(),
+            )
             .map_err(|error| PluginError::Custom(Box::new(error)))?;
         self.publisher = Some(publisher);
-        self.filter = Some(config.filters.iter().map(Filter::new).collect());
+        self.filter = Some(filters);
         self.http_service = http_service;
+        self.initial_account_backfill = initial_account_backfill;
         self.block_events_topic = config
             .block_events_topic
             .map(|b| (b.topic, b.wrap_messages));
@@ -98,6 +106,7 @@ impl GeyserPlugin for KafkaPlugin {
     fn on_unload(&mut self) {
         self.publisher = None;
         self.filter = None;
+        self.initial_account_backfill = InitialAccountBackfillHandle::new_noop();
         if let Some(http_service) = self.http_service.take() {
             http_service.shutdown();
         }
@@ -268,11 +277,11 @@ impl KafkaPlugin {
     }
 
     fn unwrap_publisher(&self) -> &Publisher {
-        self.publisher.as_ref().expect("publisher is unavailable")
+        self.publisher.as_deref().expect("publisher is unavailable")
     }
 
     fn unwrap_filters(&self) -> &Vec<Filter> {
-        self.filter.as_ref().expect("filter is unavailable")
+        self.filter.as_deref().expect("filter is unavailable")
     }
 
     fn unwrap_update_account(account: ReplicaAccountInfoVersions<'_>) -> &ReplicaAccountInfoV3<'_> {
