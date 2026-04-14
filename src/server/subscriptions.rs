@@ -144,8 +144,12 @@ pub async fn handle_post_accounts(
     let accepted_count = keys.len();
     let result = subs.add(keys);
     let enqueue_result = initial_account_backfill.enqueue(result.newly_added.clone());
-    debug_assert!(enqueue_result.accepted);
-    debug_assert!(!enqueue_result.queue_full);
+    if !enqueue_result.accepted {
+        warn!(
+            "Initial account backfill enqueue failed before Phase 6 response handling, queue_full={}",
+            enqueue_result.queue_full
+        );
+    }
     info!(
         "Processed {} pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
         parsed.pubkeys.len(),

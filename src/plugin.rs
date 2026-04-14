@@ -15,7 +15,7 @@
 use {
     crate::{
         BlockEvent, CompiledInstruction, Config, ConfirmedAccounts, Filter, HttpService,
-        InitialAccountBackfillHandle, InnerInstruction, InnerInstructions, LegacyLoadedMessage,
+        InitialAccountBackfill, InnerInstruction, InnerInstructions, LegacyLoadedMessage,
         LegacyMessage, LoadedAddresses, MessageAddressTableLookup, MessageHeader, Publisher,
         Reward, RewardsAndNumPartitions, SanitizedMessage, SanitizedTransaction, SlotStatus,
         SlotStatusEvent, TransactionEvent, TransactionStatusMeta, TransactionTokenBalance,
@@ -37,15 +37,28 @@ use {
     },
 };
 
-#[derive(Default)]
 pub struct KafkaPlugin {
     publisher: Option<Arc<Publisher>>,
     filter: Option<Arc<Vec<Filter>>>,
     block_events_topic: Option<(String, bool)>,
     http_service: Option<HttpService>,
     account_subscriptions: AccountSubscriptions,
-    initial_account_backfill: InitialAccountBackfillHandle,
+    initial_account_backfill: InitialAccountBackfill,
     confirmed_accounts: Mutex<ConfirmedAccounts>,
+}
+
+impl Default for KafkaPlugin {
+    fn default() -> Self {
+        Self {
+            publisher: None,
+            filter: None,
+            block_events_topic: None,
+            http_service: None,
+            account_subscriptions: AccountSubscriptions::default(),
+            initial_account_backfill: InitialAccountBackfill::default(),
+            confirmed_accounts: Mutex::new(ConfirmedAccounts::default()),
+        }
+    }
 }
 
 impl Debug for KafkaPlugin {
@@ -82,12 +95,18 @@ impl GeyserPlugin for KafkaPlugin {
         info!("Created rdkafka::FutureProducer");
 
         let publisher = Arc::new(Publisher::new(producer, &config));
-        let filters = Arc::new(config.filters.iter().map(Filter::new).collect());
-        let initial_account_backfill = InitialAccountBackfillHandle::new_noop();
+        let filters = Arc::new(config.filters.iter().map(Filter::new).collect::<Vec<_>>());
+        let initial_account_backfill = InitialAccountBackfill::new(
+            publisher.clone(),
+            filters.clone(),
+            self.account_subscriptions.clone(),
+            config.local_rpc_url.clone(),
+        )
+        .map_err(|error| PluginError::Custom(Box::new(error)))?;
         let http_service = config
             .create_http_service(
                 self.account_subscriptions.clone(),
-                initial_account_backfill.clone(),
+                initial_account_backfill.handle(),
             )
             .map_err(|error| PluginError::Custom(Box::new(error)))?;
         self.publisher = Some(publisher);
@@ -104,12 +123,12 @@ impl GeyserPlugin for KafkaPlugin {
     }
 
     fn on_unload(&mut self) {
-        self.publisher = None;
-        self.filter = None;
-        self.initial_account_backfill = InitialAccountBackfillHandle::new_noop();
         if let Some(http_service) = self.http_service.take() {
             http_service.shutdown();
         }
+        self.publisher = None;
+        self.filter = None;
+        self.initial_account_backfill = InitialAccountBackfill::default();
     }
 
     fn update_account(

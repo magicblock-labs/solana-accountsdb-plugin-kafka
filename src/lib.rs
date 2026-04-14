@@ -32,7 +32,7 @@ pub use {
     initial_account_backfill::{
         EnqueueResult, INITIAL_BACKFILL_INITIAL_BACKOFF_MS, INITIAL_BACKFILL_MAX_ATTEMPTS,
         INITIAL_BACKFILL_MAX_BACKOFF_MS, INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST,
-        INITIAL_BACKFILL_QUEUE_CAPACITY, InitialAccountBackfillHandle,
+        INITIAL_BACKFILL_QUEUE_CAPACITY, InitialAccountBackfill, InitialAccountBackfillHandle,
     },
     plugin::KafkaPlugin,
     publisher::Publisher,
