@@ -19,7 +19,8 @@ use {
         LegacyMessage, LoadedAddresses, MessageAddressTableLookup, MessageHeader, Publisher,
         Reward, RewardsAndNumPartitions, SanitizedMessage, SanitizedTransaction, SlotStatus,
         SlotStatusEvent, TransactionEvent, TransactionStatusMeta, TransactionTokenBalance,
-        UiTokenAmount, UpdateAccountEvent, V0LoadedMessage, V0Message, sanitized_message,
+        UiTokenAmount, UpdateAccountEvent, V0LoadedMessage, V0Message,
+        account_update_publisher::publish_account_update, sanitized_message,
         server::subscriptions::AccountSubscriptions,
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
@@ -28,7 +29,7 @@ use {
         ReplicaTransactionInfoV3, ReplicaTransactionInfoVersions, Result as PluginResult,
         SlotStatus as PluginSlotStatus,
     },
-    log::{debug, error, info, log_enabled},
+    log::{debug, error, info},
     rdkafka::util::get_rdkafka_version,
     solana_pubkey::{Pubkey, pubkey},
     std::{
@@ -144,6 +145,11 @@ impl GeyserPlugin for KafkaPlugin {
 
         let info = Self::unwrap_update_account(account);
         let event = Self::build_update_account_event(info, slot, is_startup);
+        if let Ok(pubkey) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
+            self.initial_account_backfill
+                .handle()
+                .mark_live_update_seen(&pubkey);
+        }
         self.lock_confirmed_accounts()?.record_account(event);
 
         Ok(())
@@ -378,16 +384,6 @@ impl KafkaPlugin {
         }
     }
 
-    fn should_publish_account(&self, event: &UpdateAccountEvent) -> bool {
-        // Program-based account publication is being deprecated and is intentionally
-        // unsupported here. Confirmed account publication only follows dynamic
-        // account subscriptions.
-        match <&[u8; 32]>::try_from(event.pubkey.as_slice()) {
-            Ok(key) => self.account_subscriptions.contains_sync(key),
-            Err(_) => false,
-        }
-    }
-
     fn publish_confirmed_account_updates(
         &self,
         updates: Vec<UpdateAccountEvent>,
@@ -401,43 +397,11 @@ impl KafkaPlugin {
         let mut first_error = None;
 
         for event in updates {
-            let publish = self.should_publish_account(&event);
-            let mut matched_any_filter = false;
-            for filter in filters {
-                if filter.update_account_topic.is_empty() || !publish {
-                    continue;
+            if let Err(error) =
+                publish_account_update(publisher, filters, &self.account_subscriptions, event)
+                && first_error.is_none() {
+                    first_error = Some(error);
                 }
-
-                matched_any_filter = true;
-                if let Ok(key) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
-                    info!(
-                        "Matched confirmed account update {} in slot {}",
-                        Pubkey::new_from_array(key),
-                        event.slot
-                    );
-                }
-
-                if let Err(error) = publisher.update_account(
-                    event.clone(),
-                    filter.wrap_messages,
-                    &filter.update_account_topic,
-                ) {
-                    let plugin_error = PluginError::AccountsUpdateError {
-                        msg: error.to_string(),
-                    };
-                    error!(
-                        "failed to publish confirmed account update for slot {}: {plugin_error:?}",
-                        event.slot
-                    );
-                    if first_error.is_none() {
-                        first_error = Some(plugin_error);
-                    }
-                }
-            }
-
-            if !matched_any_filter {
-                Self::log_ignore_account_update(&event.pubkey);
-            }
         }
 
         first_error.map_or(Ok(()), Err)
@@ -729,18 +693,6 @@ impl KafkaPlugin {
                 .unwrap_or_default(),
             error_details: Self::extract_error_logs_from_status(&transaction_status_meta.status),
             confirmation_count: 0, // Will be populated from slot status when available
-        }
-    }
-
-    fn log_ignore_account_update(pubkey: &[u8]) {
-        if log_enabled!(::log::Level::Debug) {
-            match <&[u8; 32]>::try_from(pubkey) {
-                Ok(key) => debug!(
-                    "Ignoring update for account key: {:?}",
-                    Pubkey::new_from_array(*key)
-                ),
-                Err(_err) => debug!("Ignoring update for account key bytes: {:?}", pubkey),
-            };
         }
     }
 

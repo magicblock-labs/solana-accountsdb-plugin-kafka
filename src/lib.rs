@@ -14,6 +14,7 @@
 
 use agave_geyser_plugin_interface::geyser_plugin_interface::GeyserPlugin;
 
+mod account_update_publisher;
 mod config;
 mod confirmed_accounts;
 mod event;

@@ -1,5 +1,8 @@
 use {
-    crate::{AccountSubscriptions, Filter, Publisher, UpdateAccountEvent},
+    crate::{
+        AccountSubscriptions, Filter, Publisher, UpdateAccountEvent,
+        account_update_publisher::publish_account_update,
+    },
     dashmap::DashMap,
     log::*,
     solana_account::Account,
@@ -36,9 +39,9 @@ impl InitialAccountBackfill {
         let inner = Arc::new(InitialAccountBackfillInner {
             tx,
             in_flight: DashMap::new(),
-            _publisher: Some(publisher),
-            _filters: filters,
-            _subscriptions: subscriptions,
+            publisher: Some(publisher),
+            filters,
+            subscriptions,
             client: RpcClient::new_with_commitment(local_rpc_url, CommitmentConfig::confirmed()),
         });
         let handle = InitialAccountBackfillHandle {
@@ -57,6 +60,14 @@ impl InitialAccountBackfill {
                             events.len(),
                             request.pubkeys.len()
                         );
+
+                        for event in events {
+                            if let Err(error) = inner.complete_backfill_event(event) {
+                                error!(
+                                    "Failed to publish initial account backfill snapshot: {error:?}"
+                                );
+                            }
+                        }
                     }
                     Err(error) => {
                         error!(
@@ -87,9 +98,9 @@ impl InitialAccountBackfill {
         let inner = Arc::new(InitialAccountBackfillInner {
             tx,
             in_flight: DashMap::new(),
-            _publisher: None,
-            _filters: Arc::new(Vec::new()),
-            _subscriptions: AccountSubscriptions::new(),
+            publisher: None,
+            filters: Arc::new(Vec::new()),
+            subscriptions: AccountSubscriptions::new(),
             client: RpcClient::new_with_commitment(String::new(), CommitmentConfig::confirmed()),
         });
         Self {
@@ -185,13 +196,54 @@ struct BackfillRequest {
 struct InitialAccountBackfillInner {
     tx: mpsc::Sender<BackfillRequest>,
     in_flight: DashMap<[u8; 32], InFlightBackfill>,
-    _publisher: Option<Arc<Publisher>>,
-    _filters: Arc<Vec<Filter>>,
-    _subscriptions: AccountSubscriptions,
+    publisher: Option<Arc<Publisher>>,
+    filters: Arc<Vec<Filter>>,
+    subscriptions: AccountSubscriptions,
     client: RpcClient,
 }
 
 impl InitialAccountBackfillInner {
+    fn complete_backfill_event(
+        &self,
+        event: UpdateAccountEvent,
+    ) -> agave_geyser_plugin_interface::geyser_plugin_interface::Result<()> {
+        let pubkey = match <[u8; 32]>::try_from(event.pubkey.as_slice()) {
+            Ok(pubkey) => pubkey,
+            Err(_) => return Ok(()),
+        };
+
+        let Some((_, in_flight)) = self.in_flight.remove(&pubkey) else {
+            return Ok(());
+        };
+
+        if in_flight.live_seen {
+            info!(
+                "Suppressing initial account backfill snapshot for {} because a live update arrived first",
+                Pubkey::new_from_array(pubkey)
+            );
+            return Ok(());
+        }
+
+        if !self.subscriptions.contains_sync(&pubkey) {
+            debug!(
+                "Skipping initial account backfill snapshot for unsubscribed pubkey {}",
+                Pubkey::new_from_array(pubkey)
+            );
+            return Ok(());
+        }
+
+        let Some(publisher) = self.publisher.as_deref() else {
+            return Ok(());
+        };
+
+        publish_account_update(
+            publisher,
+            self.filters.as_slice(),
+            &self.subscriptions,
+            event,
+        )
+    }
+
     async fn fetch_account_events_for_request(
         &self,
         pubkeys: &[[u8; 32]],
