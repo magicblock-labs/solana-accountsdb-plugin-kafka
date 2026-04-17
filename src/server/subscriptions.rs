@@ -125,6 +125,7 @@ struct AccountsResponse {
     active_count: usize,
     accepted_count: usize,
     newly_added_count: usize,
+    retried_backfill_count: usize,
     duplicate_count: usize,
 }
 
@@ -199,6 +200,7 @@ pub async fn handle_post_accounts(
                 active_count: result.active_count,
                 accepted_count,
                 newly_added_count: 0,
+                retried_backfill_count: 0,
                 duplicate_count: result.duplicate_count,
             },
         );
@@ -223,7 +225,8 @@ pub async fn handle_post_accounts(
             &AccountsResponse {
                 active_count: result.active_count,
                 accepted_count,
-                newly_added_count: enqueue_count,
+                newly_added_count: result.newly_added.len(),
+                retried_backfill_count: pending_backfill.len(),
                 duplicate_count: result.duplicate_count,
             },
         );
@@ -259,7 +262,8 @@ pub async fn handle_post_accounts(
         &AccountsResponse {
             active_count: result.active_count,
             accepted_count,
-            newly_added_count: enqueue_count,
+            newly_added_count: result.newly_added.len(),
+            retried_backfill_count: pending_backfill.len(),
             duplicate_count: result.duplicate_count,
         },
     )
