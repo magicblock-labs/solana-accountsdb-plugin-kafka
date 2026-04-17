@@ -253,7 +253,13 @@ impl InitialAccountBackfillInner {
     ) -> agave_geyser_plugin_interface::geyser_plugin_interface::Result<()> {
         let pubkey = match <[u8; 32]>::try_from(event.pubkey.as_slice()) {
             Ok(pubkey) => pubkey,
-            Err(_) => return Ok(()),
+            Err(_) => {
+                warn!(
+                    "Unexpected pubkey length {} in backfill event, skipping",
+                    event.pubkey.len()
+                );
+                return Ok(());
+            }
         };
 
         let Some((_, in_flight)) = self.in_flight.remove(&pubkey) else {
