@@ -26,18 +26,17 @@ pub fn publish_account_update(
         );
     }
 
-    publisher
-        .update_account(event.clone(), topic)
-        .map_err(|error| {
-            let plugin_error = PluginError::AccountsUpdateError {
-                msg: error.to_string(),
-            };
-            error!(
-                "failed to publish account update for slot {}: {plugin_error:?}",
-                event.slot
-            );
-            plugin_error
-        })
+    let slot = event.slot;
+    publisher.update_account(event, topic).map_err(|error| {
+        let plugin_error = PluginError::AccountsUpdateError {
+            msg: error.to_string(),
+        };
+        error!(
+            "failed to publish account update for slot {}: {plugin_error:?}",
+            slot
+        );
+        plugin_error
+    })
 }
 
 fn should_publish_account(subs: &AccountSubscriptions, event: &UpdateAccountEvent) -> bool {
