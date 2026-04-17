@@ -14,12 +14,9 @@
 
 use {
     crate::{
-        BlockEvent, Config, MessageWrapper, SlotStatusEvent, TransactionEvent, UpdateAccountEvent,
-        message_wrapper::EventMessage::{self, Account, Slot, Transaction},
-        server::prom::{
-            StatsThreadedProducerContext, UPLOAD_ACCOUNTS_TOTAL, UPLOAD_SLOTS_TOTAL,
-            UPLOAD_TRANSACTIONS_TOTAL,
-        },
+        Config, MessageWrapper, UpdateAccountEvent,
+        message_wrapper::EventMessage::{self, Account},
+        server::prom::{StatsThreadedProducerContext, UPLOAD_ACCOUNTS_TOTAL},
     },
     log::{debug, error},
     prost::Message,
@@ -44,22 +41,10 @@ impl Publisher {
         }
     }
 
-    pub fn update_account(
-        &self,
-        ev: UpdateAccountEvent,
-        wrap_messages: bool,
-        topic: &str,
-    ) -> Result<(), KafkaError> {
-        let temp_key;
+    pub fn update_account(&self, ev: UpdateAccountEvent, topic: &str) -> Result<(), KafkaError> {
         let log_pubkey = Pubkey::try_from(ev.pubkey.as_slice()).ok();
-        let (key, buf) = if wrap_messages {
-            temp_key = ev.pubkey.clone();
-            (&temp_key, Self::encode_with_wrapper(Account(Box::new(ev))))
-        } else {
-            temp_key = self.copy_and_prepend(ev.pubkey.as_slice(), b'A');
-            (&temp_key, ev.encode_to_vec())
-        };
-        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
+        let (key, buf) = Self::encode_account_update(ev);
+        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(&key).payload(&buf);
         let result = self.producer.send(record).map(|_| ()).map_err(|(e, _)| e);
         match &result {
             Ok(()) => match log_pubkey {
@@ -86,70 +71,10 @@ impl Publisher {
         result
     }
 
-    pub fn update_slot_status(
-        &self,
-        ev: SlotStatusEvent,
-        wrap_messages: bool,
-        topic: &str,
-    ) -> Result<(), KafkaError> {
-        let temp_key;
-        let (key, buf) = if wrap_messages {
-            temp_key = ev.slot.to_le_bytes().to_vec();
-            (&temp_key, Self::encode_with_wrapper(Slot(Box::new(ev))))
-        } else {
-            temp_key = self.copy_and_prepend(&ev.slot.to_le_bytes(), b'S');
-            (&temp_key, ev.encode_to_vec())
-        };
-        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
-        let result = self.producer.send(record).map(|_| ()).map_err(|(e, _)| e);
-        UPLOAD_SLOTS_TOTAL
-            .with_label_values(&[if result.is_ok() { "success" } else { "failed" }])
-            .inc();
-        result
-    }
-
-    pub fn update_transaction(
-        &self,
-        ev: TransactionEvent,
-        wrap_messages: bool,
-        topic: &str,
-    ) -> Result<(), KafkaError> {
-        let temp_key;
-        let (key, buf) = if wrap_messages {
-            (
-                &ev.signature.clone(),
-                Self::encode_with_wrapper(Transaction(Box::new(ev))),
-            )
-        } else {
-            temp_key = self.copy_and_prepend(ev.signature.as_slice(), b'T');
-            (&temp_key, ev.encode_to_vec())
-        };
-        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
-        let result = self.producer.send(record).map(|_| ()).map_err(|(e, _)| e);
-        UPLOAD_TRANSACTIONS_TOTAL
-            .with_label_values(&[if result.is_ok() { "success" } else { "failed" }])
-            .inc();
-        result
-    }
-    pub fn update_block(
-        &self,
-        ev: BlockEvent,
-        wrap_messages: bool,
-        topic: &str,
-    ) -> Result<(), KafkaError> {
-        let temp_key;
-        let (key, buf) = if wrap_messages {
-            temp_key = ev.blockhash.as_bytes().to_vec();
-            (
-                &temp_key,
-                Self::encode_with_wrapper(EventMessage::Block(Box::new(ev))),
-            )
-        } else {
-            temp_key = self.copy_and_prepend(ev.blockhash.as_bytes(), b'B');
-            (&temp_key, ev.encode_to_vec())
-        };
-        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
-        self.producer.send(record).map(|_| ()).map_err(|(e, _)| e)
+    fn encode_account_update(ev: UpdateAccountEvent) -> (Vec<u8>, Vec<u8>) {
+        let key = ev.pubkey.clone();
+        let buf = Self::encode_with_wrapper(Account(Box::new(ev)));
+        (key, buf)
     }
 
     fn encode_with_wrapper(message: EventMessage) -> Vec<u8> {
@@ -158,17 +83,58 @@ impl Publisher {
         }
         .encode_to_vec()
     }
-
-    fn copy_and_prepend(&self, data: &[u8], prefix: u8) -> Vec<u8> {
-        let mut temp_key = Vec::with_capacity(data.len() + 1);
-        temp_key.push(prefix);
-        temp_key.extend_from_slice(data);
-        temp_key
-    }
 }
 
 impl Drop for Publisher {
     fn drop(&mut self) {
         let _ = self.producer.flush(self.shutdown_timeout);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Publisher;
+    use crate::{MessageWrapper, UpdateAccountEvent, message_wrapper::EventMessage};
+    use prost::Message;
+
+    fn sample_event() -> UpdateAccountEvent {
+        UpdateAccountEvent {
+            slot: 42,
+            pubkey: vec![7; 32],
+            lamports: 99,
+            owner: vec![8; 32],
+            executable: true,
+            rent_epoch: 11,
+            data: vec![1, 2, 3],
+            write_version: 123,
+            txn_signature: Some(vec![9; 64]),
+            data_version: 5,
+            is_startup: false,
+            account_age: 77,
+        }
+    }
+
+    #[test]
+    fn account_encoding_uses_raw_pubkey_as_key() {
+        let event = sample_event();
+        let expected_key = event.pubkey.clone();
+
+        let (key, _payload) = Publisher::encode_account_update(event);
+
+        assert_eq!(key, expected_key);
+    }
+
+    #[test]
+    fn account_encoding_wraps_payload_in_message_wrapper() {
+        let event = sample_event();
+        let expected = event.clone();
+
+        let (_key, payload) = Publisher::encode_account_update(event);
+        let wrapper = MessageWrapper::decode(payload.as_slice()).unwrap();
+
+        match wrapper.event_message {
+            Some(EventMessage::Account(account)) => assert_eq!(*account, expected),
+            other => panic!("unexpected wrapper payload: {other:?}"),
+        }
     }
 }

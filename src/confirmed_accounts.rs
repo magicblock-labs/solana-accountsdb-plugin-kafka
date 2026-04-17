@@ -1,5 +1,6 @@
 use {
-    crate::{SlotStatus, UpdateAccountEvent},
+    crate::UpdateAccountEvent,
+    agave_geyser_plugin_interface::geyser_plugin_interface::SlotStatus as PluginSlotStatus,
     log::{debug, error, warn},
     solana_pubkey::Pubkey,
     std::collections::{HashMap, HashSet},
@@ -7,11 +8,36 @@ use {
 
 const STALE_UNCONFIRMED_SLOT_RETENTION: u64 = 4096;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InternalSlotStatus {
+    Processed,
+    Rooted,
+    Confirmed,
+    FirstShredReceived,
+    Completed,
+    CreatedBank,
+    Dead,
+}
+
+impl From<PluginSlotStatus> for InternalSlotStatus {
+    fn from(other: PluginSlotStatus) -> Self {
+        match other {
+            PluginSlotStatus::Processed => Self::Processed,
+            PluginSlotStatus::Rooted => Self::Rooted,
+            PluginSlotStatus::Confirmed => Self::Confirmed,
+            PluginSlotStatus::FirstShredReceived => Self::FirstShredReceived,
+            PluginSlotStatus::Completed => Self::Completed,
+            PluginSlotStatus::CreatedBank => Self::CreatedBank,
+            PluginSlotStatus::Dead(_) => Self::Dead,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct SlotNode {
     parent: Option<u64>,
     children: HashSet<u64>,
-    status: Option<SlotStatus>,
+    status: Option<InternalSlotStatus>,
     is_confirmed: bool,
     is_dead: bool,
     emitted: bool,
@@ -74,11 +100,11 @@ impl ConfirmedAccounts {
         &mut self,
         slot: u64,
         parent: Option<u64>,
-        status: SlotStatus,
+        status: InternalSlotStatus,
     ) -> SlotTransitionResult {
         self.update_highest_observed_slot(slot);
 
-        if self.dead_slots.contains(&slot) && !matches!(status, SlotStatus::Dead) {
+        if self.dead_slots.contains(&slot) && !matches!(status, InternalSlotStatus::Dead) {
             return SlotTransitionResult::default();
         }
 
@@ -105,7 +131,7 @@ impl ConfirmedAccounts {
         }
 
         let mut result = SlotTransitionResult::default();
-        if matches!(status, SlotStatus::Dead) {
+        if matches!(status, InternalSlotStatus::Dead) {
             result.dead_slots_cleaned = self.cleanup_dead_subtree(slot);
         } else if Self::is_confirming_status(status) {
             let mut current = Some(slot);
@@ -252,7 +278,10 @@ impl ConfirmedAccounts {
             .slots
             .iter()
             .filter_map(|(&slot, node)| {
-                if slot >= cutoff || node.is_confirmed || node.status == Some(SlotStatus::Rooted) {
+                if slot >= cutoff
+                    || node.is_confirmed
+                    || node.status == Some(InternalSlotStatus::Rooted)
+                {
                     return None;
                 }
                 Some(slot)
@@ -308,8 +337,11 @@ impl ConfirmedAccounts {
         }
     }
 
-    fn is_confirming_status(status: SlotStatus) -> bool {
-        matches!(status, SlotStatus::Confirmed | SlotStatus::Rooted)
+    fn is_confirming_status(status: InternalSlotStatus) -> bool {
+        matches!(
+            status,
+            InternalSlotStatus::Confirmed | InternalSlotStatus::Rooted
+        )
     }
 }
 
@@ -351,7 +383,7 @@ mod tests {
         confirmed.record_account(account_event(10, 1, 2));
 
         assert_eq!(confirmed.pending_count_for(10), 1);
-        let result = confirmed.record_slot_status(10, None, SlotStatus::Confirmed);
+        let result = confirmed.record_slot_status(10, None, InternalSlotStatus::Confirmed);
         assert_eq!(result.newly_confirmed_slots, vec![10]);
         assert_eq!(result.confirmed_updates.len(), 1);
         assert_eq!(
@@ -370,8 +402,8 @@ mod tests {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(11, 2, 1));
 
-        let first = confirmed.record_slot_status(11, None, SlotStatus::Confirmed);
-        let second = confirmed.record_slot_status(11, None, SlotStatus::Confirmed);
+        let first = confirmed.record_slot_status(11, None, InternalSlotStatus::Confirmed);
+        let second = confirmed.record_slot_status(11, None, InternalSlotStatus::Confirmed);
 
         assert_eq!(first.newly_confirmed_slots, vec![11]);
         assert_eq!(first.confirmed_updates.len(), 1);
@@ -395,7 +427,7 @@ mod tests {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(12, 3, 1));
 
-        let result = confirmed.record_slot_status(12, None, SlotStatus::Rooted);
+        let result = confirmed.record_slot_status(12, None, InternalSlotStatus::Rooted);
 
         assert_eq!(result.newly_confirmed_slots, vec![12]);
         assert_eq!(result.confirmed_updates.len(), 1);
@@ -415,10 +447,10 @@ mod tests {
         confirmed.record_account(account_event(20, 4, 1));
         confirmed.record_account(account_event(21, 5, 1));
         confirmed.record_account(account_event(22, 6, 1));
-        confirmed.record_slot_status(21, Some(20), SlotStatus::Processed);
-        confirmed.record_slot_status(22, Some(21), SlotStatus::Processed);
+        confirmed.record_slot_status(21, Some(20), InternalSlotStatus::Processed);
+        confirmed.record_slot_status(22, Some(21), InternalSlotStatus::Processed);
 
-        let result = confirmed.record_slot_status(22, None, SlotStatus::Confirmed);
+        let result = confirmed.record_slot_status(22, None, InternalSlotStatus::Confirmed);
 
         assert_eq!(result.newly_confirmed_slots, vec![22, 21, 20]);
         assert_eq!(result.confirmed_updates.len(), 3);
@@ -441,7 +473,7 @@ mod tests {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(30, 7, 1));
 
-        let result = confirmed.record_slot_status(30, None, SlotStatus::Confirmed);
+        let result = confirmed.record_slot_status(30, None, InternalSlotStatus::Confirmed);
 
         assert_eq!(result.newly_confirmed_slots, vec![30]);
         assert_eq!(result.confirmed_updates.len(), 1);
@@ -460,9 +492,9 @@ mod tests {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(40, 8, 1));
         confirmed.record_account(account_event(41, 9, 1));
-        confirmed.record_slot_status(41, Some(40), SlotStatus::Processed);
+        confirmed.record_slot_status(41, Some(40), InternalSlotStatus::Processed);
 
-        let result = confirmed.record_slot_status(41, None, SlotStatus::Confirmed);
+        let result = confirmed.record_slot_status(41, None, InternalSlotStatus::Confirmed);
 
         assert_eq!(result.newly_confirmed_slots, vec![41, 40]);
         assert_eq!(result.confirmed_updates.len(), 2);
@@ -483,7 +515,7 @@ mod tests {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(50, 10, 1));
 
-        let result = confirmed.record_slot_status(50, None, SlotStatus::Dead);
+        let result = confirmed.record_slot_status(50, None, InternalSlotStatus::Dead);
 
         assert_eq!(result.dead_slots_cleaned, vec![50]);
         assert!(result.confirmed_updates.is_empty());
@@ -499,9 +531,9 @@ mod tests {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(60, 11, 1));
         confirmed.record_account(account_event(61, 12, 1));
-        confirmed.record_slot_status(61, Some(60), SlotStatus::Processed);
+        confirmed.record_slot_status(61, Some(60), InternalSlotStatus::Processed);
 
-        let result = confirmed.record_slot_status(60, None, SlotStatus::Dead);
+        let result = confirmed.record_slot_status(60, None, InternalSlotStatus::Dead);
 
         assert_eq!(sorted_slots(result.dead_slots_cleaned), vec![60, 61]);
         assert!(result.confirmed_updates.is_empty());
@@ -519,9 +551,9 @@ mod tests {
     fn dead_slot_prevents_later_emission() {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(70, 13, 1));
-        confirmed.record_slot_status(70, None, SlotStatus::Dead);
+        confirmed.record_slot_status(70, None, InternalSlotStatus::Dead);
 
-        let result = confirmed.record_slot_status(70, None, SlotStatus::Confirmed);
+        let result = confirmed.record_slot_status(70, None, InternalSlotStatus::Confirmed);
 
         assert!(result.confirmed_updates.is_empty());
         assert!(result.newly_confirmed_slots.is_empty());
@@ -537,8 +569,8 @@ mod tests {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(80, 14, 1));
 
-        let _ = confirmed.record_slot_status(80, None, SlotStatus::Confirmed);
-        let result = confirmed.record_slot_status(80, None, SlotStatus::Rooted);
+        let _ = confirmed.record_slot_status(80, None, InternalSlotStatus::Confirmed);
+        let result = confirmed.record_slot_status(80, None, InternalSlotStatus::Rooted);
 
         assert!(result.confirmed_updates.is_empty());
         assert!(result.newly_confirmed_slots.is_empty());
@@ -556,7 +588,7 @@ mod tests {
         let result = confirmed.record_slot_status(
             STALE_UNCONFIRMED_SLOT_RETENTION + 10,
             None,
-            SlotStatus::Processed,
+            InternalSlotStatus::Processed,
         );
 
         assert_eq!(result.stale_slots_evicted, vec![1]);
@@ -572,12 +604,12 @@ mod tests {
     fn stale_fallback_does_not_evict_confirmed_slots() {
         let mut confirmed = ConfirmedAccounts::new();
         confirmed.record_account(account_event(2, 16, 1));
-        let _ = confirmed.record_slot_status(2, None, SlotStatus::Confirmed);
+        let _ = confirmed.record_slot_status(2, None, InternalSlotStatus::Confirmed);
 
         let result = confirmed.record_slot_status(
             STALE_UNCONFIRMED_SLOT_RETENTION + 10,
             None,
-            SlotStatus::Processed,
+            InternalSlotStatus::Processed,
         );
 
         assert!(result.stale_slots_evicted.is_empty());

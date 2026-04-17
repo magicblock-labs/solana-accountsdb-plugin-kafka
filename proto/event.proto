@@ -1,7 +1,5 @@
 syntax = "proto3";
 
-import "google/protobuf/wrappers.proto";
-
 package blockdaemon.solana.accountsdb_plugin_kafka.types;
 
 message UpdateAccountEvent {
@@ -33,235 +31,21 @@ message UpdateAccountEvent {
   // write_version.
   uint64 write_version = 8;
 
-  // First signature of the transaction caused this account modification
+  // First signature of the transaction caused this account modification.
   optional bytes txn_signature = 9;
 
-  // Additional analytics fields
-  uint32 data_version = 10;                   // Account data version for change tracking
-  bool is_startup = 11;                       // Whether this is a startup account update
-  uint64 account_age = 12;                    // Account age in slots since creation
-}
+  // Account data version for change tracking.
+  uint32 data_version = 10;
 
-message SlotStatusEvent {
-  uint64 slot = 1;
+  // Whether this update came from validator startup replay.
+  bool is_startup = 11;
 
-  uint64 parent = 2;
-
-  SlotStatus status = 3;
-
-  // Additional analytics fields
-  bool is_confirmed = 4;                      // Whether slot is confirmed
-  uint32 confirmation_count = 5;              // Number of confirmations
-  string status_description = 6;              // Human-readable status description
-}
-
-enum SlotStatus {
-  // The highest slot of the heaviest fork processed by the node. Ledger state at this slot is
-  // not derived from a confirmed or finalized block, but if multiple forks are present, is from
-  // the fork the validator believes is most likely to finalize.
-  Processed = 0;
-
-  // The highest slot having reached max vote lockout.
-  Rooted = 1;
-
-  // The highest slot that has been voted on by supermajority of the cluster, ie. is confirmed.
-  Confirmed = 2;
-
-  FirstShredReceived = 3;
-  Completed = 4;
-  CreatedBank = 5;
-
-  Dead = 0xDEAD;
-}
-
-// MessageHeader
-message MessageHeader {
-  uint32 num_required_signatures = 1;
-  uint32 num_readonly_signed_accounts = 2;
-  uint32 num_readonly_unsigned_accounts = 3;
-}
-
-// CompiledInstruction
-message CompiledInstruction {
-  uint32 program_id_index = 1;
-  repeated uint32 accounts = 2;
-  bytes data = 3;
-}
-
-message LoadedAddresses {
-  repeated bytes writable = 1;
-  repeated bytes readonly = 2;
-  repeated LoadedAddressInfo writable_info = 3;   // Detailed writable address information
-  repeated LoadedAddressInfo readonly_info = 4;   // Detailed readonly address information
-}
-
-// New message for detailed loaded address information
-message LoadedAddressInfo {
-  bytes address = 1;                           // Account address
-  uint32 index = 2;                            // Index in the loaded addresses list
-  bool is_writable = 3;                        // Whether account is writable
-}
-
-message MessageAddressTableLookup {
-  bytes account_key = 1;
-  repeated uint32 writable_indexes = 2;
-  repeated uint32 readonly_indexes = 3;
-}
-
-message V0Message {
-  MessageHeader header = 1;
-  repeated bytes account_keys = 2;
-  bytes recent_block_hash = 3;
-  repeated CompiledInstruction instructions = 4;
-  repeated MessageAddressTableLookup address_table_lookup = 5;
-}
-
-message V0LoadedMessage {
-  V0Message message_ = 1;
-  LoadedAddresses loaded_adresses = 2;
-  repeated bool is_writable_account_cache = 3;
-}
-
-message LegacyMessage {
-  MessageHeader header = 1;
-  repeated bytes account_keys = 2;
-  bytes recent_block_hash = 3;
-  repeated CompiledInstruction instructions = 4;
-}
-
-message LegacyLoadedMessage {
-  LegacyMessage message_ = 1;
-  repeated bool is_writable_account_cache = 2;
-}
-
-message SanitizedMessage {
-  oneof message_payload {
-    LegacyLoadedMessage legacy = 1;
-    V0LoadedMessage v0 = 2;
-  }
-}
-
-message SanitizedTransaction {
-  SanitizedMessage message_ = 1;
-  bytes message_hash = 2;
-  bool is_simple_vote_transaction = 3;
-  repeated bytes signatures = 4;
-}
-
-// https://github.com/solana-labs/solana/pull/28430/files
-message InnerInstructions {
-  uint32 index = 1;
-  repeated InnerInstruction instructions = 2;
-}
-
-message InnerInstruction {
-  CompiledInstruction instruction = 1;
-  optional uint32 stack_height = 2;
-}
-
-message UiTokenAmount {
-  google.protobuf.DoubleValue ui_amount = 1;
-  uint32 decimals = 2;
-  string amount = 3;
-  string ui_amount_string = 4;
-}
-
-message TransactionTokenBalance {
-  uint32 account_index = 1;
-  string mint = 2;
-  UiTokenAmount ui_token_account = 3;
-  string owner = 4;
-}
-
-message Reward {
-  string pubkey = 1;
-  int64 lamports = 2;
-  uint64 post_balance = 3;
-  // reward_type is an enum, but protobuf will require it to be able to accept any int32.
-  int32 reward_type = 4;
-  uint32 commission = 5;
-}
-
-message TransactionStatusMeta {
-  bool is_status_err = 1;
-  string error_info = 2;
-  uint64 fee = 3;
-  repeated uint64 pre_balances = 4;
-  repeated uint64 post_balances = 5;
-  repeated InnerInstructions inner_instructions = 6;
-  repeated string log_messages = 7;
-  repeated TransactionTokenBalance pre_token_balances = 8;
-  repeated TransactionTokenBalance post_token_balances = 9;
-  repeated Reward rewards = 10;
-  uint32 compute_units_consumed = 11;        // Compute units used by transaction
-  uint64 compute_units_price = 12;           // Compute unit price in micro-lamports
-  repeated string error_logs = 13;           // Detailed error logs for debugging
-  bool is_successful = 14;                   // Transaction success status (inverse of is_status_err)
-}
-
-// based on solana_accountsdb_plugin_interface::accountsdb_plugin_interface::ReplicaTransactionInfo
-message TransactionEvent {
-  bytes signature = 1;
-  bool is_vote = 2;
-  SanitizedTransaction transaction = 3;
-  TransactionStatusMeta transaction_status_meta = 4;
-  uint64 slot = 5;
-  uint64 index = 6;
-
-  // Enhanced analytics fields
-  uint32 compute_units_consumed = 7;         // Compute units used by transaction
-  uint64 compute_units_price = 8;            // Compute unit price in micro-lamports
-  uint64 total_cost = 9;                     // Total transaction cost (fee + compute)
-  uint32 instruction_count = 10;             // Number of instructions in transaction
-  uint32 account_count = 11;                 // Number of accounts involved
-  uint64 execution_time_ns = 12;             // Execution time in nanoseconds
-  bool is_successful = 13;                   // Transaction success status
-  repeated string execution_logs = 14;        // Detailed execution logs
-  repeated string error_details = 15;         // Detailed error information
-  uint32 confirmation_count = 16;            // Number of confirmations
+  // Approximate account age in slots.
+  uint64 account_age = 12;
 }
 
 message MessageWrapper {
   oneof event_message {
     UpdateAccountEvent account = 1;
-    SlotStatusEvent slot = 2;
-    TransactionEvent transaction = 3;
-    BlockEvent block = 4;
   }
-}
-message RewardsAndNumPartitions {
-  // List of rewards.
-  repeated Reward rewards = 1;
-
-  // Number of partitions (optional).
-  optional uint64 num_partitions = 2;
-}
-
-message BlockEvent {
-  // Parent slot number.
-  uint64 parent_slot = 1;
-
-  // Parent blockhash.
-  string parent_blockhash = 2;
-
-  // Current slot number.
-  uint64 slot = 3;
-
-  // Current blockhash.
-  string blockhash = 4;
-
-  // Rewards and number of partitions.
-  RewardsAndNumPartitions rewards = 5;
-
-  // Estimated production time, as a Unix timestamp (optional).
-  optional int64 block_time = 6;
-
-  // Block height (optional).
-  optional uint64 block_height = 7;
-
-  // Number of executed transactions in the block.
-  uint64 executed_transaction_count = 8;
-
-  // Number of entries in the block.
-  uint64 entry_count = 9;
 }
