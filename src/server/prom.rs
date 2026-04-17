@@ -4,7 +4,7 @@ use {
     http_body_util::Full,
     hyper::Response,
     log::*,
-    prometheus::{GaugeVec, IntCounterVec, Opts, Registry, TextEncoder},
+    prometheus::{GaugeVec, IntCounterVec, IntGauge, Opts, Registry, TextEncoder},
     rdkafka::{
         client::ClientContext,
         producer::{DeliveryResult, ProducerContext},
@@ -36,6 +36,36 @@ lazy_static::lazy_static! {
         &["status"]
     ).unwrap();
 
+    pub static ref INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("initial_backfill_requests_enqueued_total", "Initial backfill request enqueue outcomes"),
+        &["status"]
+    ).unwrap();
+
+    pub static ref INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("initial_backfill_pubkeys_enqueued_total", "Number of pubkeys submitted to initial backfill"),
+        &["status"]
+    ).unwrap();
+
+    pub static ref INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("initial_backfill_rpc_attempts_total", "Initial backfill RPC attempts"),
+        &["status"]
+    ).unwrap();
+
+    pub static ref INITIAL_BACKFILL_RPC_FAILURES_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("initial_backfill_rpc_failures_total", "Initial backfill RPC failures"),
+        &["status"]
+    ).unwrap();
+
+    pub static ref INITIAL_BACKFILL_SNAPSHOTS_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new("initial_backfill_snapshots_total", "Initial backfill snapshot publish outcomes"),
+        &["status"]
+    ).unwrap();
+
+    pub static ref INITIAL_BACKFILL_IN_FLIGHT: IntGauge = IntGauge::new(
+        "initial_backfill_in_flight",
+        "Current number of in-flight initial backfill pubkeys"
+    ).unwrap();
+
     static ref KAFKA_STATS: GaugeVec = GaugeVec::new(
         Opts::new("kafka_stats", "librdkafka metrics"),
         &["broker", "metric"]
@@ -56,6 +86,12 @@ pub fn register_metrics() {
         register!(UPLOAD_ACCOUNTS_TOTAL);
         register!(UPLOAD_SLOTS_TOTAL);
         register!(UPLOAD_TRANSACTIONS_TOTAL);
+        register!(INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL);
+        register!(INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL);
+        register!(INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL);
+        register!(INITIAL_BACKFILL_RPC_FAILURES_TOTAL);
+        register!(INITIAL_BACKFILL_SNAPSHOTS_TOTAL);
+        register!(INITIAL_BACKFILL_IN_FLIGHT);
         register!(KAFKA_STATS);
 
         for (key, value) in &[

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use {
+    crate::InitialAccountBackfillHandle,
     crate::server::{
         HttpService, prom::StatsThreadedProducerContext, subscriptions::AccountSubscriptions,
     },
@@ -46,6 +47,9 @@ pub struct Config {
     /// Accounts, transactions filters
     pub filters: Vec<ConfigFilter>,
 
+    /// Local validator RPC endpoint used for initial account backfill.
+    pub local_rpc_url: String,
+
     /// Kafka topic to send block events to.
     #[serde(default)]
     pub block_events_topic: Option<BlockEventsConfig>,
@@ -62,6 +66,7 @@ impl Default for Config {
             kafka: HashMap::new(),
             shutdown_timeout_ms: 30_000,
             filters: vec![],
+            local_rpc_url: String::new(),
             prometheus: None,
             block_events_topic: None,
         }
@@ -75,6 +80,7 @@ impl Config {
         let mut this: Self = serde_json::from_reader(file)
             .map_err(|e| GeyserPluginError::ConfigFileReadError { msg: e.to_string() })?;
         this.fill_defaults();
+        this.validate()?;
         Ok(this)
     }
 
@@ -100,9 +106,23 @@ impl Config {
         self.set_default("partitioner", "murmur2_random");
     }
 
-    pub fn create_http_service(&self, subs: AccountSubscriptions) -> IoResult<Option<HttpService>> {
+    fn validate(&self) -> PluginResult<()> {
+        if self.local_rpc_url.trim().is_empty() {
+            return Err(GeyserPluginError::ConfigFileReadError {
+                msg: "missing required config field `local_rpc_url`".to_owned(),
+            });
+        }
+
+        Ok(())
+    }
+
+    pub fn create_http_service(
+        &self,
+        subs: AccountSubscriptions,
+        initial_account_backfill: InitialAccountBackfillHandle,
+    ) -> IoResult<Option<HttpService>> {
         self.prometheus
-            .map(|addr| HttpService::new(addr, subs))
+            .map(|addr| HttpService::new(addr, subs, initial_account_backfill))
             .transpose()
     }
 }

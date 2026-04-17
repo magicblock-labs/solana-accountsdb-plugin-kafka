@@ -1,4 +1,5 @@
 use {
+    crate::InitialAccountBackfillHandle,
     bytes::Bytes,
     dashmap::DashSet,
     http::StatusCode,
@@ -6,7 +7,7 @@ use {
     hyper::{Request, Response, body::Incoming},
     log::*,
     solana_pubkey::Pubkey,
-    std::{str::FromStr, sync::Arc},
+    std::{collections::HashSet, str::FromStr, sync::Arc},
 };
 
 /// Maximum request body size: 1 MiB
@@ -20,6 +21,9 @@ const MAX_BODY_SIZE: usize = 1024 * 1024;
 #[derive(Clone)]
 pub struct AccountSubscriptions {
     inner: Arc<DashSet<[u8; 32]>>,
+    /// Keys that are subscribed but whose initial backfill enqueue failed.
+    /// Subsequent requests will attempt to re-enqueue these.
+    needs_backfill: Arc<DashSet<[u8; 32]>>,
 }
 
 impl Default for AccountSubscriptions {
@@ -32,6 +36,7 @@ impl AccountSubscriptions {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DashSet::new()),
+            needs_backfill: Arc::new(DashSet::new()),
         }
     }
 
@@ -43,13 +48,67 @@ impl AccountSubscriptions {
         self.inner.contains(pubkey)
     }
 
-    /// Add pubkeys, return new total count.
-    pub fn add<I: IntoIterator<Item = [u8; 32]>>(&self, pubkeys: I) -> usize {
+    /// Add pubkeys and report how many were newly inserted versus duplicates.
+    pub fn add<I: IntoIterator<Item = [u8; 32]>>(&self, pubkeys: I) -> AddAccountsResult {
+        let mut newly_added = Vec::new();
+        let mut request_seen = HashSet::new();
+        let mut duplicate_count = 0;
+
         for pk in pubkeys {
-            self.inner.insert(pk);
+            if !request_seen.insert(pk) {
+                duplicate_count += 1;
+                continue;
+            }
+
+            if self.inner.insert(pk) {
+                newly_added.push(pk);
+            } else {
+                duplicate_count += 1;
+            }
         }
-        self.inner.len()
+
+        AddAccountsResult {
+            active_count: self.inner.len(),
+            newly_added,
+            duplicate_count,
+        }
     }
+
+    /// Mark keys as needing backfill (enqueue failed).
+    pub fn mark_needs_backfill(&self, pubkeys: &[[u8; 32]]) {
+        for pk in pubkeys {
+            self.needs_backfill.insert(*pk);
+        }
+    }
+
+    /// Clear keys from the needs_backfill set (enqueue succeeded).
+    pub fn clear_needs_backfill(&self, pubkeys: &[[u8; 32]]) {
+        for pk in pubkeys {
+            self.needs_backfill.remove(pk);
+        }
+    }
+
+    /// Drain all keys currently pending backfill.
+    /// Uses `retain` so each entry is visited-and-removed under the same shard
+    /// write lock, preventing concurrent callers from seeing the same keys.
+    pub fn drain_needs_backfill(&self) -> Vec<[u8; 32]> {
+        let mut keys = Vec::new();
+        self.needs_backfill.retain(|k| {
+            keys.push(*k);
+            false
+        });
+        keys
+    }
+
+    pub fn needs_backfill_count(&self) -> usize {
+        self.needs_backfill.len()
+    }
+}
+
+pub struct AddAccountsResult {
+    pub active_count: usize,
+    pub newly_added: Vec<[u8; 32]>,
+    pub duplicate_count: usize,
 }
 
 // ----- REST handler -----
@@ -64,6 +123,10 @@ struct AddAccountsRequest {
 #[derive(serde::Serialize)]
 struct AccountsResponse {
     active_count: usize,
+    accepted_count: usize,
+    newly_added_count: usize,
+    retried_backfill_count: usize,
+    duplicate_count: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -75,6 +138,7 @@ struct ErrorResponse {
 pub async fn handle_post_accounts(
     req: Request<Incoming>,
     subs: AccountSubscriptions,
+    initial_account_backfill: InitialAccountBackfillHandle,
 ) -> Response<Full<Bytes>> {
     use http_body_util::BodyExt;
     let body_bytes = match Limited::new(req.into_body(), MAX_BODY_SIZE).collect().await {
@@ -112,13 +176,97 @@ pub async fn handle_post_accounts(
         }
     }
 
-    let active_count = subs.add(keys);
+    let accepted_count = keys.len();
+    let result = subs.add(keys);
     info!(
-        "Added {} pubkeys, active_count={active_count}",
-        parsed.pubkeys.len()
+        "Processed {} pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+        parsed.pubkeys.len(),
+        accepted_count,
+        result.newly_added.len(),
+        result.duplicate_count,
+        result.active_count
     );
 
-    json_response(StatusCode::OK, &AccountsResponse { active_count })
+    // Collect keys that need backfill: newly added ones plus any previously
+    // failed ones still in needs_backfill.
+    let mut to_enqueue = result.newly_added.clone();
+    let pending_backfill = subs.drain_needs_backfill();
+    to_enqueue.extend_from_slice(&pending_backfill);
+
+    if to_enqueue.is_empty() {
+        return json_response(
+            StatusCode::OK,
+            &AccountsResponse {
+                active_count: result.active_count,
+                accepted_count,
+                newly_added_count: 0,
+                retried_backfill_count: 0,
+                duplicate_count: result.duplicate_count,
+            },
+        );
+    }
+
+    let enqueue_count = to_enqueue.len();
+    let enqueue_result = initial_account_backfill.enqueue(to_enqueue.clone());
+    if enqueue_result.queue_full {
+        // Enqueue failed — mark all keys as needing backfill so the next
+        // request (retry) will attempt to enqueue them again.
+        subs.mark_needs_backfill(&to_enqueue);
+        warn!(
+            "Initial account backfill queue full, marked {} keys as needs_backfill, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+            enqueue_count,
+            accepted_count,
+            result.newly_added.len(),
+            result.duplicate_count,
+            result.active_count
+        );
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &AccountsResponse {
+                active_count: result.active_count,
+                accepted_count,
+                newly_added_count: result.newly_added.len(),
+                retried_backfill_count: pending_backfill.len(),
+                duplicate_count: result.duplicate_count,
+            },
+        );
+    }
+
+    if !enqueue_result.accepted {
+        // Channel closed — mark keys so they can be retried if the channel recovers.
+        subs.mark_needs_backfill(&to_enqueue);
+        error!(
+            "Initial account backfill enqueue failed unexpectedly, marked {} keys as needs_backfill, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+            enqueue_count,
+            accepted_count,
+            result.newly_added.len(),
+            result.duplicate_count,
+            result.active_count
+        );
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to enqueue initial account backfill",
+        );
+    }
+
+    info!(
+        "Enqueued initial account backfill for {} pubkeys (newly_added={}, retried_backfill={}), active_count={}",
+        enqueue_count,
+        result.newly_added.len(),
+        pending_backfill.len(),
+        result.active_count
+    );
+
+    json_response(
+        StatusCode::OK,
+        &AccountsResponse {
+            active_count: result.active_count,
+            accepted_count,
+            newly_added_count: result.newly_added.len(),
+            retried_backfill_count: pending_backfill.len(),
+            duplicate_count: result.duplicate_count,
+        },
+    )
 }
 
 fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response<Full<Bytes>> {
@@ -173,4 +321,105 @@ fn error_response(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
             error: msg.to_owned(),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AccountSubscriptions;
+
+    fn pk(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    #[test]
+    fn empty_add_keeps_counts_zero() {
+        let subs = AccountSubscriptions::new();
+
+        let result = subs.add(Vec::<[u8; 32]>::new());
+
+        assert_eq!(result.active_count, 0);
+        assert!(result.newly_added.is_empty());
+        assert_eq!(result.duplicate_count, 0);
+    }
+
+    #[test]
+    fn all_new_pubkeys_are_reported_as_newly_added() {
+        let subs = AccountSubscriptions::new();
+
+        let result = subs.add(vec![pk(1), pk(2), pk(3)]);
+
+        assert_eq!(result.active_count, 3);
+        assert_eq!(result.newly_added, vec![pk(1), pk(2), pk(3)]);
+        assert_eq!(result.duplicate_count, 0);
+    }
+
+    #[test]
+    fn duplicate_pubkeys_within_request_are_counted_once() {
+        let subs = AccountSubscriptions::new();
+
+        let result = subs.add(vec![pk(1), pk(1), pk(2), pk(2), pk(2)]);
+
+        assert_eq!(result.active_count, 2);
+        assert_eq!(result.newly_added, vec![pk(1), pk(2)]);
+        assert_eq!(result.duplicate_count, 3);
+    }
+
+    #[test]
+    fn readding_existing_pubkeys_counts_as_duplicates() {
+        let subs = AccountSubscriptions::new();
+        let _ = subs.add(vec![pk(1), pk(2)]);
+
+        let result = subs.add(vec![pk(2), pk(3), pk(3)]);
+
+        assert_eq!(result.active_count, 3);
+        assert_eq!(result.newly_added, vec![pk(3)]);
+        assert_eq!(result.duplicate_count, 2);
+    }
+
+    #[test]
+    fn mark_needs_backfill_is_idempotent_per_key() {
+        let subs = AccountSubscriptions::new();
+
+        subs.mark_needs_backfill(&[pk(1)]);
+        subs.mark_needs_backfill(&[pk(1)]);
+
+        assert_eq!(subs.needs_backfill_count(), 1);
+        let drained = subs.drain_needs_backfill();
+        assert_eq!(drained, vec![pk(1)]);
+    }
+
+    #[test]
+    fn mark_then_drain_returns_all_and_empties() {
+        let subs = AccountSubscriptions::new();
+
+        subs.mark_needs_backfill(&[pk(1), pk(2), pk(3)]);
+
+        let mut drained = subs.drain_needs_backfill();
+        drained.sort();
+        assert_eq!(drained, vec![pk(1), pk(2), pk(3)]);
+        assert_eq!(subs.needs_backfill_count(), 0);
+    }
+
+    #[test]
+    fn drain_on_empty_returns_empty_and_zero_count() {
+        let subs = AccountSubscriptions::new();
+
+        let drained = subs.drain_needs_backfill();
+
+        assert!(drained.is_empty());
+        assert_eq!(subs.needs_backfill_count(), 0);
+    }
+
+    #[test]
+    fn clear_needs_backfill_removes_only_specified_keys() {
+        let subs = AccountSubscriptions::new();
+        subs.mark_needs_backfill(&[pk(1), pk(2), pk(3), pk(4)]);
+
+        subs.clear_needs_backfill(&[pk(2), pk(4)]);
+
+        assert_eq!(subs.needs_backfill_count(), 2);
+        let mut drained = subs.drain_needs_backfill();
+        drained.sort();
+        assert_eq!(drained, vec![pk(1), pk(3)]);
+    }
 }
