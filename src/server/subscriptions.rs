@@ -89,11 +89,14 @@ impl AccountSubscriptions {
     }
 
     /// Drain all keys currently pending backfill.
+    /// Uses `retain` so each entry is visited-and-removed under the same shard
+    /// write lock, preventing concurrent callers from seeing the same keys.
     pub fn drain_needs_backfill(&self) -> Vec<[u8; 32]> {
-        let keys: Vec<_> = self.needs_backfill.iter().map(|r| *r.key()).collect();
-        for k in &keys {
-            self.needs_backfill.remove(k);
-        }
+        let mut keys = Vec::new();
+        self.needs_backfill.retain(|k| {
+            keys.push(*k);
+            false
+        });
         keys
     }
 
