@@ -50,9 +50,8 @@ pub struct Config {
     /// Local validator RPC endpoint used for initial account backfill.
     pub local_rpc_url: String,
 
-    /// Prometheus endpoint.
-    #[serde(default)]
-    pub prometheus: Option<SocketAddr>,
+    /// Shared HTTP endpoint for metrics and whitelist management.
+    pub prometheus: SocketAddr,
 }
 
 impl Default for Config {
@@ -63,7 +62,7 @@ impl Default for Config {
             shutdown_timeout_ms: 30_000,
             update_account_topic: String::new(),
             local_rpc_url: String::new(),
-            prometheus: None,
+            prometheus: SocketAddr::from(([127, 0, 0, 1], 0)),
         }
     }
 }
@@ -114,6 +113,12 @@ impl Config {
             });
         }
 
+        if self.prometheus.port() == 0 {
+            return Err(GeyserPluginError::ConfigFileReadError {
+                msg: "missing required config field `prometheus`".to_owned(),
+            });
+        }
+
         Ok(())
     }
 
@@ -121,10 +126,8 @@ impl Config {
         &self,
         subs: AccountSubscriptions,
         initial_account_backfill: InitialAccountBackfillHandle,
-    ) -> IoResult<Option<HttpService>> {
-        self.prometheus
-            .map(|addr| HttpService::new(addr, subs, initial_account_backfill))
-            .transpose()
+    ) -> IoResult<HttpService> {
+        HttpService::new(self.prometheus, subs, initial_account_backfill)
     }
 }
 
@@ -148,7 +151,8 @@ mod tests {
                 "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
                 "kafka": {"bootstrap.servers": "localhost:9092"},
                 "update_account_topic": "solana.testnet.account_updates",
-                "local_rpc_url": "http://127.0.0.1:8899"
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "prometheus": "127.0.0.1:8080"
             }"#,
         )
         .unwrap();
@@ -161,12 +165,28 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_prometheus() {
+        let error = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899"
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("missing field `prometheus`"));
+    }
+
+    #[test]
     fn rejects_missing_update_account_topic() {
         let error = parse_config(
             r#"{
                 "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
                 "kafka": {"bootstrap.servers": "localhost:9092"},
-                "local_rpc_url": "http://127.0.0.1:8899"
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "prometheus": "127.0.0.1:8080"
             }"#,
         )
         .unwrap_err();
@@ -182,6 +202,7 @@ mod tests {
                 "kafka": {"bootstrap.servers": "localhost:9092"},
                 "update_account_topic": "solana.testnet.account_updates",
                 "local_rpc_url": "http://127.0.0.1:8899",
+                "prometheus": "127.0.0.1:8080",
                 "filters": [
                     {"update_account_topic": "legacy"}
                 ]

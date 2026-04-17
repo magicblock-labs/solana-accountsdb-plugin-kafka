@@ -102,7 +102,7 @@ impl GeyserPlugin for KafkaPlugin {
 
         self.publisher = Some(publisher);
         self.update_account_topic = Some(update_account_topic);
-        self.http_service = http_service;
+        self.http_service = Some(http_service);
         self.initial_account_backfill = initial_account_backfill;
         *self.lock_confirmed_accounts()? = ConfirmedAccounts::new();
 

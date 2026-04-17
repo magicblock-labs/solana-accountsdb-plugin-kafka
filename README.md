@@ -69,7 +69,7 @@ Supported fields:
 - `shutdown_timeout_ms`: producer flush timeout on shutdown
 - `update_account_topic`: Kafka topic for wrapped account updates
 - `local_rpc_url`: local validator RPC endpoint used for initial account backfill
-- `prometheus`: optional listen address for metrics and whitelist management
+- `prometheus`: required shared listen address for metrics and whitelist management
 
 Minimal config:
 
@@ -80,11 +80,12 @@ Minimal config:
     "bootstrap.servers": "localhost:9092"
   },
   "update_account_topic": "solana.testnet.account_updates",
-  "local_rpc_url": "http://127.0.0.1:8899"
+  "local_rpc_url": "http://127.0.0.1:8899",
+  "prometheus": "127.0.0.1:8080"
 }
 ```
 
-`update_account_topic` and `local_rpc_url` are required. Legacy filter arrays and legacy transaction, slot-status, block, and wrapping options are rejected during config parsing.
+`update_account_topic`, `local_rpc_url`, and `prometheus` are required. The current `prometheus` bind address serves both `/metrics` and `POST /filters/accounts`. Legacy filter arrays and legacy transaction, slot-status, block, and wrapping options are rejected during config parsing.
 
 ## Whitelist Management
 
