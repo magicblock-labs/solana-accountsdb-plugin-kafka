@@ -227,6 +227,10 @@ impl KafkaPlugin {
         let mut first_error = None;
 
         for event in updates {
+            if !Self::should_publish_confirmed_update(&event) {
+                continue;
+            }
+
             if let Ok(pubkey) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
                 self.initial_account_backfill
                     .handle()
@@ -241,5 +245,46 @@ impl KafkaPlugin {
         }
 
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn should_publish_confirmed_update(event: &UpdateAccountEvent) -> bool {
+        !event.is_startup
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KafkaPlugin;
+    use crate::UpdateAccountEvent;
+
+    fn sample_event(is_startup: bool) -> UpdateAccountEvent {
+        UpdateAccountEvent {
+            slot: 42,
+            pubkey: vec![1; 32],
+            lamports: 5,
+            owner: vec![2; 32],
+            executable: false,
+            rent_epoch: 0,
+            data: vec![],
+            write_version: 7,
+            txn_signature: None,
+            data_version: 7,
+            is_startup,
+            account_age: 0,
+        }
+    }
+
+    #[test]
+    fn startup_replay_updates_are_not_published_from_confirmed_buffer() {
+        assert!(!KafkaPlugin::should_publish_confirmed_update(
+            &sample_event(true)
+        ));
+    }
+
+    #[test]
+    fn live_updates_are_published_from_confirmed_buffer() {
+        assert!(KafkaPlugin::should_publish_confirmed_update(&sample_event(
+            false
+        )));
     }
 }

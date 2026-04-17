@@ -95,6 +95,8 @@ Account inclusion is managed through the HTTP API:
 - newly added accounts are queued for initial backfill from the local RPC endpoint
 - live updates and backfill snapshots are both gated by the same whitelist
 
+Startup replay updates are not used as a second bootstrap publication path; subscribed bootstrap delivery comes from the initial RPC backfill flow.
+
 If initial backfill enqueue fails because the queue is full, the keys are kept for retry on a later request.
 
 ## Message Format
