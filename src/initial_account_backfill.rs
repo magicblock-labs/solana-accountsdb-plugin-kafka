@@ -359,9 +359,6 @@ impl InitialAccountBackfillInner {
                 .await
             {
                 Ok(response) => {
-                    INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL
-                        .with_label_values(&["succeeded"])
-                        .inc();
                     info!(
                         "Initial account backfill RPC request succeeded for {} pubkeys at slot {}",
                         pubkeys.len(),
@@ -369,6 +366,9 @@ impl InitialAccountBackfillInner {
                     );
 
                     if response.value.len() != pubkeys.len() {
+                        INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL
+                            .with_label_values(&["failed"])
+                            .inc();
                         INITIAL_BACKFILL_RPC_FAILURES_TOTAL
                             .with_label_values(&["length_mismatch"])
                             .inc();
@@ -379,6 +379,9 @@ impl InitialAccountBackfillInner {
                         )));
                     }
 
+                    INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL
+                        .with_label_values(&["succeeded"])
+                        .inc();
                     return Ok(pubkeys
                         .iter()
                         .zip(response.value.into_iter())
