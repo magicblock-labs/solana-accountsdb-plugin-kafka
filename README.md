@@ -2,29 +2,16 @@
 
 Kafka publisher for Solana's [Geyser plugin framework](https://docs.solana.com/developing/plugins/geyser-plugins).
 
-## Current Product Direction
+## What This Plugin Does
 
-This repository is being stripped down to a narrower product surface.
+This plugin publishes confirmed Solana account updates to Kafka.
 
-The intended supported model is:
-
-- publish account updates only
-- use the `POST /filters/accounts` whitelist as the only inclusion mechanism
-- keep slot tracking only as an internal detail needed to release confirmed account updates
-- use the wrapped account message as the only supported Kafka payload shape
-
-Legacy features are deprecated and will be removed:
-
-- transaction publishing
-- slot-status publishing as a Kafka output
-- block publishing
-- config-driven program filters and ignore lists
-- startup-wide `publish_all_accounts`
-- unwrapped payload encoding
+- account updates are the only published event type
+- accounts are included only after they are added through `POST /filters/accounts`
+- slot notifications are consumed internally so buffered updates can be released once confirmed
+- Kafka payloads always use `MessageWrapper::Account(UpdateAccountEvent)`
 
 ## Quick Start
-
-Use a single account-update topic and manage the whitelist through the HTTP API.
 
 ```json
 {
@@ -33,17 +20,19 @@ Use a single account-update topic and manage the whitelist through the HTTP API.
     "bootstrap.servers": "localhost:9092"
   },
   "shutdown_timeout_ms": 30000,
+  "update_account_topic": "solana.testnet.account_updates",
   "local_rpc_url": "http://127.0.0.1:8899",
-  "prometheus": "127.0.0.1:8080",
-  "filters": [
-    {
-      "update_account_topic": "solana.testnet.account_updates"
-    }
-  ]
+  "prometheus": "127.0.0.1:8080"
 }
 ```
 
-After startup, add accounts to the whitelist with `POST /filters/accounts`. Only subscribed accounts are intended to be published.
+After the plugin is running, add accounts to the whitelist:
+
+```shell
+curl -X POST http://127.0.0.1:8080/filters/accounts \
+  -H 'content-type: application/json' \
+  -d '{"pubkeys":["YourAccountPubkey111111111111111111111111111111"]}'
+```
 
 ## Installation
 
@@ -53,12 +42,12 @@ Find binary releases [on GitHub](https://github.com/Blockdaemon/solana-accountsd
 
 ### Building from source
 
-#### Prerequisites
+Prerequisites:
 
 - Rust 1.93.1 from `rust-toolchain.toml`
 - `protoc` 3.15 or later
 
-#### Build
+Build:
 
 ```shell
 cargo build --release
@@ -73,9 +62,16 @@ The Solana validator and this plugin must be built against matching Solana and R
 
 Config is provided as JSON.
 
-### Intended minimal shape
+Supported fields:
 
-The target config shape for the stripped plugin is:
+- `libpath`: path to the plugin shared library
+- `kafka`: `librdkafka` producer configuration
+- `shutdown_timeout_ms`: producer flush timeout on shutdown
+- `update_account_topic`: Kafka topic for wrapped account updates
+- `local_rpc_url`: local validator RPC endpoint used for initial account backfill
+- `prometheus`: optional listen address for metrics and whitelist management
+
+Minimal config:
 
 ```json
 {
@@ -83,55 +79,31 @@ The target config shape for the stripped plugin is:
   "kafka": {
     "bootstrap.servers": "localhost:9092"
   },
-  "shutdown_timeout_ms": 30000,
-  "local_rpc_url": "http://127.0.0.1:8899",
-  "prometheus": "127.0.0.1:8080",
-  "filters": [
-    {
-      "update_account_topic": "solana.testnet.account_updates"
-    }
-  ]
+  "update_account_topic": "solana.testnet.account_updates",
+  "local_rpc_url": "http://127.0.0.1:8899"
 }
 ```
 
-Fields that matter going forward:
+`update_account_topic` and `local_rpc_url` are required. Legacy filter arrays and legacy transaction, slot-status, block, and wrapping options are rejected during config parsing.
 
-- `libpath`: path to the plugin shared library
-- `kafka`: `librdkafka` producer configuration
-- `shutdown_timeout_ms`: producer flush timeout on shutdown
-- `local_rpc_url`: local validator RPC endpoint used for initial account backfill
-- `prometheus`: optional listen address for metrics and whitelist management
-- `filters[0].update_account_topic`: Kafka topic for wrapped account updates
+## Whitelist Management
 
-### Whitelist management
+Account inclusion is managed through the HTTP API:
 
-Account inclusion is intended to come only from the HTTP-managed whitelist:
+- `POST /filters/accounts` adds accounts to the active whitelist
+- newly added accounts are queued for initial backfill from the local RPC endpoint
+- live updates and backfill snapshots are both gated by the same whitelist
 
-- `POST /filters/accounts` adds accounts
-- the plugin uses that subscription set for live account-update publication
-- initial backfill uses the same subscription set
-
-Slot notifications may still be consumed internally so confirmed account updates can be released, but slot-status events are not part of the intended external product surface.
+If initial backfill enqueue fails because the queue is full, the keys are kept for retry on a later request.
 
 ## Message Format
 
-The only intended wire format is the wrapped account message.
+The plugin publishes one wire format only:
 
 - Kafka key: raw account pubkey bytes
-- Kafka value: `MessageWrapper::Account(UpdateAccountEvent)`
+- Kafka value: protobuf `MessageWrapper` with the `account` variant populated
 
-Legacy unwrapped payloads and mixed message-type topics are deprecated and will be removed.
-
-## Migration
-
-Move existing configs toward this shape now:
-
-1. Keep only `filters[0].update_account_topic`.
-2. Stop relying on `program_filters`, `program_ignores`, `account_filters`, or `publish_all_accounts`.
-3. Stop configuring transaction, slot-status, or block topics.
-4. Treat wrapped account messages as the only supported downstream schema.
-
-During the transition, some legacy keys may still deserialize, but they should be considered deprecated and scheduled for removal.
+`UpdateAccountEvent` contains the account fields, slot, write version, optional transaction signature, and the additional account metadata already present in the schema.
 
 ## Buffering
 
@@ -143,6 +115,20 @@ Useful `librdkafka` settings include:
 - `queue.buffering.max.kbytes`
 - `statistics.interval.ms`
 
-## Status
+## Migration
 
-This README describes the intended stripped-down product contract, not a promise that every legacy code path has already been deleted in the current commit.
+Older configs must be reduced to the account-only shape above.
+
+Remove:
+
+- `filters`
+- `block_events_topic`
+- `slot_status_topic`
+- `transaction_topic`
+- `program_filters`
+- `program_ignores`
+- `account_filters`
+- `publish_all_accounts`
+- `include_vote_transactions`
+- `include_failed_transactions`
+- `wrap_messages`
