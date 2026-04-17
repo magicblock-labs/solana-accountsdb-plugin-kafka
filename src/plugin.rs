@@ -220,23 +220,12 @@ impl GeyserPlugin for KafkaPlugin {
         let subs = &self.account_subscriptions;
         for filter in self.unwrap_filters() {
             if !filter.transaction_topic.is_empty() {
-                let is_failed = info.transaction_status_meta.status.is_err();
-                if (!filter.wants_vote_tx() && info.is_vote)
-                    || (!filter.wants_failed_tx() && is_failed)
-                {
-                    debug!("Ignoring vote/failed transaction");
-                    continue;
-                }
-
                 if !info
                     .transaction
                     .message
                     .static_account_keys()
                     .iter()
-                    .any(|pubkey| {
-                        filter.wants_program(pubkey.as_ref())
-                            || subs.contains_sync(&pubkey.to_bytes())
-                    })
+                    .any(|pubkey| subs.contains_sync(&pubkey.to_bytes()))
                 {
                     debug!("Ignoring transaction {:?}", info.signature);
                     continue;
