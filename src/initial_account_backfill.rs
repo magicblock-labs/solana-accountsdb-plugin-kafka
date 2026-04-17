@@ -1,6 +1,6 @@
 use {
     crate::{
-        AccountSubscriptions, Filter, Publisher, UpdateAccountEvent,
+        AccountSubscriptions, Publisher, UpdateAccountEvent,
         account_update_publisher::publish_account_update,
         server::prom::{
             INITIAL_BACKFILL_IN_FLIGHT, INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL,
@@ -36,7 +36,7 @@ pub struct InitialAccountBackfill {
 impl InitialAccountBackfill {
     pub fn new(
         publisher: Arc<Publisher>,
-        filters: Arc<Vec<Filter>>,
+        update_account_topic: Arc<String>,
         subscriptions: AccountSubscriptions,
         local_rpc_url: String,
     ) -> io::Result<Self> {
@@ -46,7 +46,7 @@ impl InitialAccountBackfill {
             tx,
             in_flight: DashMap::new(),
             publisher: Some(publisher),
-            filters,
+            update_account_topic,
             subscriptions,
             client: RpcClient::new_with_commitment(local_rpc_url, CommitmentConfig::confirmed()),
         });
@@ -116,7 +116,7 @@ impl InitialAccountBackfill {
             tx,
             in_flight: DashMap::new(),
             publisher: None,
-            filters: Arc::new(Vec::new()),
+            update_account_topic: Arc::new(String::new()),
             subscriptions: AccountSubscriptions::new(),
             client: RpcClient::new_with_commitment(String::new(), CommitmentConfig::confirmed()),
         });
@@ -242,7 +242,7 @@ struct InitialAccountBackfillInner {
     tx: mpsc::Sender<BackfillRequest>,
     in_flight: DashMap<[u8; 32], InFlightBackfill>,
     publisher: Option<Arc<Publisher>>,
-    filters: Arc<Vec<Filter>>,
+    update_account_topic: Arc<String>,
     subscriptions: AccountSubscriptions,
     client: RpcClient,
 }
@@ -299,7 +299,7 @@ impl InitialAccountBackfillInner {
 
         let result = publish_account_update(
             publisher,
-            self.filters.as_slice(),
+            self.update_account_topic.as_str(),
             &self.subscriptions,
             event,
         );
@@ -474,7 +474,7 @@ mod tests {
                 tx,
                 in_flight: DashMap::new(),
                 publisher: None,
-                filters: Arc::new(Vec::new()),
+                update_account_topic: Arc::new(String::new()),
                 subscriptions: AccountSubscriptions::new(),
                 client: RpcClient::new_with_commitment(
                     String::new(),

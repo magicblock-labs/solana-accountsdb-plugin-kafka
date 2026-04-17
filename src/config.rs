@@ -44,15 +44,11 @@ pub struct Config {
     #[serde(default)]
     pub shutdown_timeout_ms: u64,
 
-    /// Accounts, transactions filters
-    pub filters: Vec<ConfigFilter>,
+    /// Kafka topic to send wrapped account updates to.
+    pub update_account_topic: String,
 
     /// Local validator RPC endpoint used for initial account backfill.
     pub local_rpc_url: String,
-
-    /// Kafka topic to send block events to.
-    #[serde(default)]
-    pub block_events_topic: Option<BlockEventsConfig>,
 
     /// Prometheus endpoint.
     #[serde(default)]
@@ -65,10 +61,9 @@ impl Default for Config {
             libpath: "".to_owned(),
             kafka: HashMap::new(),
             shutdown_timeout_ms: 30_000,
-            filters: vec![],
+            update_account_topic: String::new(),
             local_rpc_url: String::new(),
             prometheus: None,
-            block_events_topic: None,
         }
     }
 }
@@ -107,6 +102,12 @@ impl Config {
     }
 
     fn validate(&self) -> PluginResult<()> {
+        if self.update_account_topic.trim().is_empty() {
+            return Err(GeyserPluginError::ConfigFileReadError {
+                msg: "missing required config field `update_account_topic`".to_owned(),
+            });
+        }
+
         if self.local_rpc_url.trim().is_empty() {
             return Err(GeyserPluginError::ConfigFileReadError {
                 msg: "missing required config field `local_rpc_url`".to_owned(),
@@ -127,50 +128,67 @@ impl Config {
     }
 }
 
-/// Plugin config.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct ConfigFilter {
-    /// Kafka topic to send account updates to.
-    pub update_account_topic: String,
-    /// Kafka topic to send slot status updates to.
-    pub slot_status_topic: String,
-    /// Kafka topic to send transaction to.
-    pub transaction_topic: String,
-    /// List of programs to ignore.
-    pub program_ignores: Vec<String>,
-    /// List of programs to include
-    pub program_filters: Vec<String>,
-    /// Publish all accounts on startup.
-    pub publish_all_accounts: bool,
-    /// Publish vote transactions.
-    pub include_vote_transactions: bool,
-    /// Publish failed transactions.
-    pub include_failed_transactions: bool,
-    /// Wrap all event message in a single message type.
-    pub wrap_messages: bool,
-}
+pub type Producer = ThreadedProducer<DefaultProducerContext>;
 
-impl Default for ConfigFilter {
-    fn default() -> Self {
-        Self {
-            update_account_topic: "".to_owned(),
-            slot_status_topic: "".to_owned(),
-            transaction_topic: "".to_owned(),
-            program_ignores: Vec::new(),
-            program_filters: Vec::new(),
-            publish_all_accounts: false,
-            include_vote_transactions: true,
-            include_failed_transactions: true,
-            wrap_messages: false,
-        }
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    fn parse_config(json: &str) -> Result<Config, String> {
+        let mut config: Config = serde_json::from_str(json).map_err(|error| error.to_string())?;
+        config.fill_defaults();
+        config.validate().map_err(|error| format!("{error:?}"))?;
+        Ok(config)
+    }
+
+    #[test]
+    fn parses_valid_minimal_config() {
+        let config = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.update_account_topic,
+            "solana.testnet.account_updates"
+        );
+        assert_eq!(config.local_rpc_url, "http://127.0.0.1:8899");
+    }
+
+    #[test]
+    fn rejects_missing_update_account_topic() {
+        let error = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "local_rpc_url": "http://127.0.0.1:8899"
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("missing field `update_account_topic`"));
+    }
+
+    #[test]
+    fn rejects_legacy_filter_fields() {
+        let error = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "filters": [
+                    {"update_account_topic": "legacy"}
+                ]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("unknown field `filters`"));
     }
 }
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct BlockEventsConfig {
-    pub topic: String,
-    pub wrap_messages: bool,
-}
-
-pub type Producer = ThreadedProducer<DefaultProducerContext>;

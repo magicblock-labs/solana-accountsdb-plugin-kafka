@@ -1,5 +1,5 @@
 use {
-    crate::{AccountSubscriptions, Filter, Publisher, UpdateAccountEvent},
+    crate::{AccountSubscriptions, Publisher, UpdateAccountEvent},
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError as PluginError, Result as PluginResult,
     },
@@ -9,7 +9,7 @@ use {
 
 pub fn publish_account_update(
     publisher: &Publisher,
-    filters: &[Filter],
+    topic: &str,
     subs: &AccountSubscriptions,
     event: UpdateAccountEvent,
 ) -> PluginResult<()> {
@@ -17,14 +17,6 @@ pub fn publish_account_update(
         log_ignore_account_update(&event.pubkey);
         return Ok(());
     }
-
-    let Some(filter) = filters
-        .iter()
-        .find(|filter| !filter.update_account_topic.is_empty())
-    else {
-        log_ignore_account_update(&event.pubkey);
-        return Ok(());
-    };
 
     if let Ok(key) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
         debug!(
@@ -35,11 +27,7 @@ pub fn publish_account_update(
     }
 
     publisher
-        .update_account(
-            event.clone(),
-            filter.wrap_messages,
-            &filter.update_account_topic,
-        )
+        .update_account(event.clone(), topic)
         .map_err(|error| {
             let plugin_error = PluginError::AccountsUpdateError {
                 msg: error.to_string(),

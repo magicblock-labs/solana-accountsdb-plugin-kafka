@@ -14,12 +14,9 @@
 
 use {
     crate::{
-        BlockEvent, Config, MessageWrapper, SlotStatusEvent, TransactionEvent, UpdateAccountEvent,
-        message_wrapper::EventMessage::{self, Account, Slot, Transaction},
-        server::prom::{
-            StatsThreadedProducerContext, UPLOAD_ACCOUNTS_TOTAL, UPLOAD_SLOTS_TOTAL,
-            UPLOAD_TRANSACTIONS_TOTAL,
-        },
+        Config, MessageWrapper, UpdateAccountEvent,
+        message_wrapper::EventMessage::{self, Account},
+        server::prom::{StatsThreadedProducerContext, UPLOAD_ACCOUNTS_TOTAL},
     },
     log::{debug, error},
     prost::Message,
@@ -44,22 +41,11 @@ impl Publisher {
         }
     }
 
-    pub fn update_account(
-        &self,
-        ev: UpdateAccountEvent,
-        wrap_messages: bool,
-        topic: &str,
-    ) -> Result<(), KafkaError> {
-        let temp_key;
+    pub fn update_account(&self, ev: UpdateAccountEvent, topic: &str) -> Result<(), KafkaError> {
         let log_pubkey = Pubkey::try_from(ev.pubkey.as_slice()).ok();
-        let (key, buf) = if wrap_messages {
-            temp_key = ev.pubkey.clone();
-            (&temp_key, Self::encode_with_wrapper(Account(Box::new(ev))))
-        } else {
-            temp_key = self.copy_and_prepend(ev.pubkey.as_slice(), b'A');
-            (&temp_key, ev.encode_to_vec())
-        };
-        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
+        let key = ev.pubkey.clone();
+        let buf = Self::encode_with_wrapper(Account(Box::new(ev)));
+        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(&key).payload(&buf);
         let result = self.producer.send(record).map(|_| ()).map_err(|(e, _)| e);
         match &result {
             Ok(()) => match log_pubkey {
@@ -86,84 +72,11 @@ impl Publisher {
         result
     }
 
-    pub fn update_slot_status(
-        &self,
-        ev: SlotStatusEvent,
-        wrap_messages: bool,
-        topic: &str,
-    ) -> Result<(), KafkaError> {
-        let temp_key;
-        let (key, buf) = if wrap_messages {
-            temp_key = ev.slot.to_le_bytes().to_vec();
-            (&temp_key, Self::encode_with_wrapper(Slot(Box::new(ev))))
-        } else {
-            temp_key = self.copy_and_prepend(&ev.slot.to_le_bytes(), b'S');
-            (&temp_key, ev.encode_to_vec())
-        };
-        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
-        let result = self.producer.send(record).map(|_| ()).map_err(|(e, _)| e);
-        UPLOAD_SLOTS_TOTAL
-            .with_label_values(&[if result.is_ok() { "success" } else { "failed" }])
-            .inc();
-        result
-    }
-
-    pub fn update_transaction(
-        &self,
-        ev: TransactionEvent,
-        wrap_messages: bool,
-        topic: &str,
-    ) -> Result<(), KafkaError> {
-        let temp_key;
-        let (key, buf) = if wrap_messages {
-            (
-                &ev.signature.clone(),
-                Self::encode_with_wrapper(Transaction(Box::new(ev))),
-            )
-        } else {
-            temp_key = self.copy_and_prepend(ev.signature.as_slice(), b'T');
-            (&temp_key, ev.encode_to_vec())
-        };
-        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
-        let result = self.producer.send(record).map(|_| ()).map_err(|(e, _)| e);
-        UPLOAD_TRANSACTIONS_TOTAL
-            .with_label_values(&[if result.is_ok() { "success" } else { "failed" }])
-            .inc();
-        result
-    }
-    pub fn update_block(
-        &self,
-        ev: BlockEvent,
-        wrap_messages: bool,
-        topic: &str,
-    ) -> Result<(), KafkaError> {
-        let temp_key;
-        let (key, buf) = if wrap_messages {
-            temp_key = ev.blockhash.as_bytes().to_vec();
-            (
-                &temp_key,
-                Self::encode_with_wrapper(EventMessage::Block(Box::new(ev))),
-            )
-        } else {
-            temp_key = self.copy_and_prepend(ev.blockhash.as_bytes(), b'B');
-            (&temp_key, ev.encode_to_vec())
-        };
-        let record = BaseRecord::<Vec<u8>, _>::to(topic).key(key).payload(&buf);
-        self.producer.send(record).map(|_| ()).map_err(|(e, _)| e)
-    }
-
     fn encode_with_wrapper(message: EventMessage) -> Vec<u8> {
         MessageWrapper {
             event_message: Some(message),
         }
         .encode_to_vec()
-    }
-
-    fn copy_and_prepend(&self, data: &[u8], prefix: u8) -> Vec<u8> {
-        let mut temp_key = Vec::with_capacity(data.len() + 1);
-        temp_key.push(prefix);
-        temp_key.extend_from_slice(data);
-        temp_key
     }
 }
 

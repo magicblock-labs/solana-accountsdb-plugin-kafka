@@ -18,7 +18,6 @@ mod account_update_publisher;
 mod config;
 mod confirmed_accounts;
 mod event;
-mod filter;
 mod initial_account_backfill;
 mod plugin;
 mod publisher;
@@ -26,10 +25,9 @@ mod server;
 mod version;
 
 pub use {
-    config::{Config, ConfigFilter, Producer},
-    confirmed_accounts::{ConfirmedAccounts, SlotTransitionResult},
+    config::{Config, Producer},
+    confirmed_accounts::{ConfirmedAccounts, InternalSlotStatus, SlotTransitionResult},
     event::*,
-    filter::Filter,
     initial_account_backfill::{
         EnqueueResult, INITIAL_BACKFILL_INITIAL_BACKOFF_MS, INITIAL_BACKFILL_MAX_ATTEMPTS,
         INITIAL_BACKFILL_MAX_BACKOFF_MS, INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST,

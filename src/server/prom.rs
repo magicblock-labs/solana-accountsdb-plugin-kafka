@@ -26,16 +26,6 @@ lazy_static::lazy_static! {
         &["status"]
     ).unwrap();
 
-    pub static ref UPLOAD_SLOTS_TOTAL: IntCounterVec = IntCounterVec::new(
-        Opts::new("upload_slots_total", "Status of uploaded slots"),
-        &["status"]
-    ).unwrap();
-
-    pub static ref UPLOAD_TRANSACTIONS_TOTAL: IntCounterVec = IntCounterVec::new(
-        Opts::new("upload_transactions_total", "Status of uploaded transactions"),
-        &["status"]
-    ).unwrap();
-
     pub static ref INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL: IntCounterVec = IntCounterVec::new(
         Opts::new("initial_backfill_requests_enqueued_total", "Initial backfill request enqueue outcomes"),
         &["status"]
@@ -84,8 +74,6 @@ pub fn register_metrics() {
         }
         register!(VERSION);
         register!(UPLOAD_ACCOUNTS_TOTAL);
-        register!(UPLOAD_SLOTS_TOTAL);
-        register!(UPLOAD_TRANSACTIONS_TOTAL);
         register!(INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL);
         register!(INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL);
         register!(INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL);
