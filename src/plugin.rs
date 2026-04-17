@@ -145,11 +145,6 @@ impl GeyserPlugin for KafkaPlugin {
 
         let info = Self::unwrap_update_account(account);
         let event = Self::build_update_account_event(info, slot, is_startup);
-        if let Ok(pubkey) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
-            self.initial_account_backfill
-                .handle()
-                .mark_live_update_seen(&pubkey);
-        }
         self.lock_confirmed_accounts()?.record_account(event);
 
         Ok(())
@@ -397,6 +392,11 @@ impl KafkaPlugin {
         let mut first_error = None;
 
         for event in updates {
+            if let Ok(pubkey) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
+                self.initial_account_backfill
+                    .handle()
+                    .mark_live_update_seen(&pubkey);
+            }
             if let Err(error) =
                 publish_account_update(publisher, filters, &self.account_subscriptions, event)
                 && first_error.is_none()
