@@ -368,4 +368,51 @@ mod tests {
         assert_eq!(result.newly_added, vec![pk(3)]);
         assert_eq!(result.duplicate_count, 2);
     }
+
+    #[test]
+    fn mark_needs_backfill_is_idempotent_per_key() {
+        let subs = AccountSubscriptions::new();
+
+        subs.mark_needs_backfill(&[pk(1)]);
+        subs.mark_needs_backfill(&[pk(1)]);
+
+        assert_eq!(subs.needs_backfill_count(), 1);
+        let drained = subs.drain_needs_backfill();
+        assert_eq!(drained, vec![pk(1)]);
+    }
+
+    #[test]
+    fn mark_then_drain_returns_all_and_empties() {
+        let subs = AccountSubscriptions::new();
+
+        subs.mark_needs_backfill(&[pk(1), pk(2), pk(3)]);
+
+        let mut drained = subs.drain_needs_backfill();
+        drained.sort();
+        assert_eq!(drained, vec![pk(1), pk(2), pk(3)]);
+        assert_eq!(subs.needs_backfill_count(), 0);
+    }
+
+    #[test]
+    fn drain_on_empty_returns_empty_and_zero_count() {
+        let subs = AccountSubscriptions::new();
+
+        let drained = subs.drain_needs_backfill();
+
+        assert!(drained.is_empty());
+        assert_eq!(subs.needs_backfill_count(), 0);
+    }
+
+    #[test]
+    fn clear_needs_backfill_removes_only_specified_keys() {
+        let subs = AccountSubscriptions::new();
+        subs.mark_needs_backfill(&[pk(1), pk(2), pk(3), pk(4)]);
+
+        subs.clear_needs_backfill(&[pk(2), pk(4)]);
+
+        assert_eq!(subs.needs_backfill_count(), 2);
+        let mut drained = subs.drain_needs_backfill();
+        drained.sort();
+        assert_eq!(drained, vec![pk(1), pk(3)]);
+    }
 }
