@@ -21,6 +21,9 @@ const MAX_BODY_SIZE: usize = 1024 * 1024;
 #[derive(Clone)]
 pub struct AccountSubscriptions {
     inner: Arc<DashSet<[u8; 32]>>,
+    /// Keys that are subscribed but whose initial backfill enqueue failed.
+    /// Subsequent requests will attempt to re-enqueue these.
+    needs_backfill: Arc<DashSet<[u8; 32]>>,
 }
 
 impl Default for AccountSubscriptions {
@@ -33,6 +36,7 @@ impl AccountSubscriptions {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DashSet::new()),
+            needs_backfill: Arc::new(DashSet::new()),
         }
     }
 
@@ -68,6 +72,33 @@ impl AccountSubscriptions {
             newly_added,
             duplicate_count,
         }
+    }
+
+    /// Mark keys as needing backfill (enqueue failed).
+    pub fn mark_needs_backfill(&self, pubkeys: &[[u8; 32]]) {
+        for pk in pubkeys {
+            self.needs_backfill.insert(*pk);
+        }
+    }
+
+    /// Clear keys from the needs_backfill set (enqueue succeeded).
+    pub fn clear_needs_backfill(&self, pubkeys: &[[u8; 32]]) {
+        for pk in pubkeys {
+            self.needs_backfill.remove(pk);
+        }
+    }
+
+    /// Drain all keys currently pending backfill.
+    pub fn drain_needs_backfill(&self) -> Vec<[u8; 32]> {
+        let keys: Vec<_> = self.needs_backfill.iter().map(|r| *r.key()).collect();
+        for k in &keys {
+            self.needs_backfill.remove(k);
+        }
+        keys
+    }
+
+    pub fn needs_backfill_count(&self) -> usize {
+        self.needs_backfill.len()
     }
 }
 
@@ -152,7 +183,13 @@ pub async fn handle_post_accounts(
         result.active_count
     );
 
-    if result.newly_added.is_empty() {
+    // Collect keys that need backfill: newly added ones plus any previously
+    // failed ones still in needs_backfill.
+    let mut to_enqueue = result.newly_added.clone();
+    let pending_backfill = subs.drain_needs_backfill();
+    to_enqueue.extend_from_slice(&pending_backfill);
+
+    if to_enqueue.is_empty() {
         return json_response(
             StatusCode::OK,
             &AccountsResponse {
@@ -164,10 +201,15 @@ pub async fn handle_post_accounts(
         );
     }
 
-    let enqueue_result = initial_account_backfill.enqueue(result.newly_added.clone());
+    let enqueue_count = to_enqueue.len();
+    let enqueue_result = initial_account_backfill.enqueue(to_enqueue.clone());
     if enqueue_result.queue_full {
+        // Enqueue failed — mark all keys as needing backfill so the next
+        // request (retry) will attempt to enqueue them again.
+        subs.mark_needs_backfill(&to_enqueue);
         warn!(
-            "Initial account backfill queue full after subscribing pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+            "Initial account backfill queue full, marked {} keys as needs_backfill, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+            enqueue_count,
             accepted_count,
             result.newly_added.len(),
             result.duplicate_count,
@@ -178,15 +220,18 @@ pub async fn handle_post_accounts(
             &AccountsResponse {
                 active_count: result.active_count,
                 accepted_count,
-                newly_added_count: result.newly_added.len(),
+                newly_added_count: enqueue_count,
                 duplicate_count: result.duplicate_count,
             },
         );
     }
 
     if !enqueue_result.accepted {
+        // Channel closed — mark keys so they can be retried if the channel recovers.
+        subs.mark_needs_backfill(&to_enqueue);
         error!(
-            "Initial account backfill enqueue failed unexpectedly after subscribing pubkeys, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+            "Initial account backfill enqueue failed unexpectedly, marked {} keys as needs_backfill, accepted_count={}, newly_added_count={}, duplicate_count={}, active_count={}",
+            enqueue_count,
             accepted_count,
             result.newly_added.len(),
             result.duplicate_count,
@@ -199,8 +244,10 @@ pub async fn handle_post_accounts(
     }
 
     info!(
-        "Enqueued initial account backfill for newly added pubkeys, newly_added_count={}, active_count={}",
+        "Enqueued initial account backfill for {} pubkeys (newly_added={}, retried_backfill={}), active_count={}",
+        enqueue_count,
         result.newly_added.len(),
+        pending_backfill.len(),
         result.active_count
     );
 
@@ -209,7 +256,7 @@ pub async fn handle_post_accounts(
         &AccountsResponse {
             active_count: result.active_count,
             accepted_count,
-            newly_added_count: result.newly_added.len(),
+            newly_added_count: enqueue_count,
             duplicate_count: result.duplicate_count,
         },
     )
