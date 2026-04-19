@@ -56,47 +56,8 @@ impl InitialAccountBackfill {
 
         runtime.spawn(async move {
             while let Some(request) = rx.recv().await {
-                match inner
-                    .fetch_account_events_for_request(&request.pubkeys)
-                    .await
-                {
-                    Ok(events) => {
-                        info!(
-                            "Initial account backfill RPC request succeeded for {} pubkeys",
-                            request.pubkeys.len()
-                        );
-                        debug!(
-                            "Fetched {} initial account backfill snapshots for {} pubkeys",
-                            events.len(),
-                            request.pubkeys.len()
-                        );
-
-                        for event in events {
-                            if let Err(error) = inner.complete_backfill_event(event) {
-                                INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-                                    .with_label_values(&["publish_failed"])
-                                    .inc();
-                                error!(
-                                    "Failed to publish initial account backfill snapshot: {error:?}"
-                                );
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        INITIAL_BACKFILL_RPC_FAILURES_TOTAL
-                            .with_label_values(&["request_failed"])
-                            .inc();
-                        error!(
-                            "Initial account backfill RPC fetch failed for {} pubkeys: {error}",
-                            request.pubkeys.len()
-                        );
-                    }
-                }
-
-                for pubkey in request.pubkeys {
-                    inner.in_flight.remove(&pubkey);
-                }
-                INITIAL_BACKFILL_IN_FLIGHT.set(inner.in_flight.len() as i64);
+                inner.process_request(&request.pubkeys).await;
+                inner.clear_in_flight(&request.pubkeys);
             }
         });
 
@@ -248,6 +209,50 @@ struct InitialAccountBackfillInner {
 }
 
 impl InitialAccountBackfillInner {
+    async fn process_request(&self, pubkeys: &[[u8; 32]]) {
+        match self.fetch_account_events_for_request(pubkeys).await {
+            Ok(events) => {
+                info!(
+                    "Initial account backfill RPC request succeeded for {} pubkeys",
+                    pubkeys.len()
+                );
+                debug!(
+                    "Fetched {} initial account backfill snapshots for {} pubkeys",
+                    events.len(),
+                    pubkeys.len()
+                );
+                self.publish_events(events);
+            }
+            Err(error) => {
+                INITIAL_BACKFILL_RPC_FAILURES_TOTAL
+                    .with_label_values(&["request_failed"])
+                    .inc();
+                error!(
+                    "Initial account backfill RPC fetch failed for {} pubkeys: {error}",
+                    pubkeys.len()
+                );
+            }
+        }
+    }
+
+    fn publish_events(&self, events: Vec<UpdateAccountEvent>) {
+        for event in events {
+            if let Err(error) = self.complete_backfill_event(event) {
+                INITIAL_BACKFILL_SNAPSHOTS_TOTAL
+                    .with_label_values(&["publish_failed"])
+                    .inc();
+                error!("Failed to publish initial account backfill snapshot: {error:?}");
+            }
+        }
+    }
+
+    fn clear_in_flight(&self, pubkeys: &[[u8; 32]]) {
+        for pubkey in pubkeys {
+            self.in_flight.remove(pubkey);
+        }
+        INITIAL_BACKFILL_IN_FLIGHT.set(self.in_flight.len() as i64);
+    }
+
     fn complete_backfill_event(
         &self,
         event: UpdateAccountEvent,
@@ -266,12 +271,10 @@ impl InitialAccountBackfillInner {
         let Some((_, in_flight)) = self.in_flight.remove(&pubkey) else {
             return Ok(());
         };
-        INITIAL_BACKFILL_IN_FLIGHT.set(self.in_flight.len() as i64);
+        Self::record_in_flight_gauge(self.in_flight.len());
 
         if in_flight.live_seen {
-            INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-                .with_label_values(&["suppressed_live_seen"])
-                .inc();
+            Self::record_snapshot("suppressed_live_seen");
             info!(
                 "Suppressing initial account backfill snapshot for {} because a live update arrived first",
                 Pubkey::new_from_array(pubkey)
@@ -280,9 +283,7 @@ impl InitialAccountBackfillInner {
         }
 
         if !self.subscriptions.contains_sync(&pubkey) {
-            INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-                .with_label_values(&["skipped_unsubscribed"])
-                .inc();
+            Self::record_snapshot("skipped_unsubscribed");
             debug!(
                 "Skipping initial account backfill snapshot for unsubscribed pubkey {}",
                 Pubkey::new_from_array(pubkey)
@@ -291,9 +292,7 @@ impl InitialAccountBackfillInner {
         }
 
         let Some(publisher) = self.publisher.as_deref() else {
-            INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-                .with_label_values(&["skipped_no_publisher"])
-                .inc();
+            Self::record_snapshot("skipped_no_publisher");
             return Ok(());
         };
 
@@ -303,13 +302,11 @@ impl InitialAccountBackfillInner {
             &self.subscriptions,
             event,
         );
-        INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-            .with_label_values(&[if result.is_ok() {
-                "published"
-            } else {
-                "publish_failed"
-            }])
-            .inc();
+        Self::record_snapshot(if result.is_ok() {
+            "published"
+        } else {
+            "publish_failed"
+        });
         if result.is_ok() {
             info!(
                 "Published initial account backfill snapshot for {}",
@@ -415,6 +412,16 @@ impl InitialAccountBackfillInner {
         }
 
         Err(io::Error::other(last_error.unwrap()))
+    }
+
+    fn record_snapshot(label: &str) {
+        INITIAL_BACKFILL_SNAPSHOTS_TOTAL
+            .with_label_values(&[label])
+            .inc();
+    }
+
+    fn record_in_flight_gauge(count: usize) {
+        INITIAL_BACKFILL_IN_FLIGHT.set(count as i64);
     }
 }
 
