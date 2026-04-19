@@ -11,6 +11,14 @@ This plugin publishes confirmed Solana account updates to Kafka.
 - slot notifications are consumed internally so buffered updates can be released once confirmed
 - Kafka payloads always use `MessageWrapper::Account(UpdateAccountEvent)`
 
+## Architecture
+
+- `plugin/` is the Geyser adapter. It reads config, wires runtime services, maps validator callbacks into internal events, and releases buffered updates when slots become confirmed.
+- `confirmation_buffer.rs` owns the slot graph and confirmed-update buffering so account callbacks stay separate from confirmation policy.
+- `initial_account_backfill/` owns subscription bootstrap. It enqueues requested pubkeys, fetches current account state from local RPC, and suppresses stale snapshots when a live update wins the race.
+- `server/` owns the admin HTTP API. `server/mod.rs` boots the listener, `server/accounts.rs` handles `POST /filters/accounts`, and `server/prom.rs` exposes `GET /metrics`.
+- `account_update_publisher.rs` owns publication policy, while `publisher.rs` only encodes and hands approved account updates to Kafka.
+
 ## Quick Start
 
 ```json
