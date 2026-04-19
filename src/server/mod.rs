@@ -4,6 +4,7 @@ pub mod subscriptions;
 
 use {
     crate::InitialAccountBackfillHandle,
+    crate::metrics::register_metrics,
     bytes::Bytes,
     http::StatusCode,
     http_body_util::Full,
@@ -30,7 +31,7 @@ impl HttpService {
         metrics_enabled: bool,
     ) -> IoResult<Self> {
         if metrics_enabled {
-            prom::register_metrics();
+            register_metrics();
         }
 
         let runtime = Runtime::new()?;

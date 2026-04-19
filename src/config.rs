@@ -14,8 +14,9 @@
 
 use {
     crate::InitialAccountBackfillHandle,
+    crate::metrics::StatsThreadedProducerContext,
     crate::server::{
-        HttpService, prom::StatsThreadedProducerContext, subscriptions::AccountSubscriptions,
+        HttpService, subscriptions::AccountSubscriptions,
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError, Result as PluginResult,

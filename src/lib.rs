@@ -19,6 +19,7 @@ mod config;
 mod confirmed_accounts;
 mod event;
 mod initial_account_backfill;
+mod metrics;
 mod plugin;
 mod publisher;
 mod server;
@@ -33,11 +34,10 @@ pub use {
         INITIAL_BACKFILL_MAX_BACKOFF_MS, INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST,
         INITIAL_BACKFILL_QUEUE_CAPACITY, InitialAccountBackfill, InitialAccountBackfillHandle,
     },
+    metrics::StatsThreadedProducerContext,
     plugin::KafkaPlugin,
     publisher::Publisher,
-    server::{
-        HttpService, prom::StatsThreadedProducerContext, subscriptions::AccountSubscriptions,
-    },
+    server::{HttpService, subscriptions::AccountSubscriptions},
 };
 
 #[unsafe(no_mangle)]
