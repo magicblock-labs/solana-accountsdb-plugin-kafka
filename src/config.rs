@@ -52,6 +52,10 @@ pub struct Config {
 
     /// Admin HTTP endpoint for account management and optional metrics.
     pub admin: SocketAddr,
+
+    /// Enable the `/metrics` endpoint on the admin HTTP server.
+    #[serde(default)]
+    pub metrics: bool,
 }
 
 impl Default for Config {
@@ -63,6 +67,7 @@ impl Default for Config {
             update_account_topic: String::new(),
             local_rpc_url: String::new(),
             admin: SocketAddr::from(([127, 0, 0, 1], 0)),
+            metrics: false,
         }
     }
 }
@@ -211,5 +216,38 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("unknown field `filters`"));
+    }
+
+    #[test]
+    fn parses_config_with_metrics_enabled() {
+        let config = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080",
+                "metrics": true
+            }"#,
+        )
+        .unwrap();
+
+        assert!(config.metrics);
+    }
+
+    #[test]
+    fn metrics_defaults_to_false() {
+        let config = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080"
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!config.metrics);
     }
 }
