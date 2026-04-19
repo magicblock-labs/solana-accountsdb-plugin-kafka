@@ -26,8 +26,11 @@ impl HttpService {
         address: SocketAddr,
         subs: AccountSubscriptions,
         initial_account_backfill: InitialAccountBackfillHandle,
+        metrics_enabled: bool,
     ) -> IoResult<Self> {
-        prom::register_metrics();
+        if metrics_enabled {
+            prom::register_metrics();
+        }
 
         let runtime = Runtime::new()?;
         let listener = runtime.block_on(TcpListener::bind(address))?;
@@ -50,7 +53,8 @@ impl HttpService {
                     let subs = subs.clone();
                     let initial_account_backfill = initial_account_backfill.clone();
                     async move {
-                        let response = route(req, subs, initial_account_backfill).await;
+                        let response =
+                            route(req, subs, initial_account_backfill, metrics_enabled).await;
                         Ok::<_, hyper::Error>(response)
                     }
                 });
@@ -77,9 +81,10 @@ async fn route(
     req: Request<Incoming>,
     subs: AccountSubscriptions,
     initial_account_backfill: InitialAccountBackfillHandle,
+    metrics_enabled: bool,
 ) -> Response<Full<Bytes>> {
     match (req.method(), req.uri().path()) {
-        (&Method::GET, "/metrics") => metrics_handler(),
+        (&Method::GET, "/metrics") if metrics_enabled => metrics_handler(),
         (&Method::POST, "/filters/accounts") => {
             subscriptions::handle_post_accounts(req, subs, initial_account_backfill).await
         }

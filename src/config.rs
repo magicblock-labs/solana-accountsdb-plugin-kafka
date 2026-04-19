@@ -132,7 +132,7 @@ impl Config {
         subs: AccountSubscriptions,
         initial_account_backfill: InitialAccountBackfillHandle,
     ) -> IoResult<HttpService> {
-        HttpService::new(self.admin, subs, initial_account_backfill)
+        HttpService::new(self.admin, subs, initial_account_backfill, self.metrics)
     }
 }
 
