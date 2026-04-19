@@ -22,7 +22,7 @@ This plugin publishes confirmed Solana account updates to Kafka.
   "shutdown_timeout_ms": 30000,
   "update_account_topic": "solana.testnet.account_updates",
   "local_rpc_url": "http://127.0.0.1:8899",
-  "prometheus": "127.0.0.1:8080"
+  "admin": "127.0.0.1:8080"
 }
 ```
 
@@ -69,7 +69,8 @@ Supported fields:
 - `shutdown_timeout_ms`: producer flush timeout on shutdown
 - `update_account_topic`: Kafka topic for wrapped account updates
 - `local_rpc_url`: local validator RPC endpoint used for initial account backfill
-- `prometheus`: required shared listen address for metrics and whitelist management
+- `admin`: required listen address for the admin HTTP API (account management and metrics)
+- `metrics`: optional boolean (default `false`); set to `true` to enable the `/metrics` endpoint
 
 Minimal config:
 
@@ -81,11 +82,11 @@ Minimal config:
   },
   "update_account_topic": "solana.testnet.account_updates",
   "local_rpc_url": "http://127.0.0.1:8899",
-  "prometheus": "127.0.0.1:8080"
+  "admin": "127.0.0.1:8080"
 }
 ```
 
-`update_account_topic`, `local_rpc_url`, and `prometheus` are required. The current `prometheus` bind address serves both `/metrics` and `POST /filters/accounts`. Legacy filter arrays and legacy transaction, slot-status, block, and wrapping options are rejected during config parsing.
+`update_account_topic`, `local_rpc_url`, and `admin` are required. The `admin` bind address serves `POST /filters/accounts` and, when `metrics` is `true`, also `GET /metrics`. Legacy filter arrays and legacy transaction, slot-status, block, and wrapping options are rejected during config parsing.
 
 ## Whitelist Management
 
