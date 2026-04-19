@@ -50,8 +50,12 @@ pub struct Config {
     /// Local validator RPC endpoint used for initial account backfill.
     pub local_rpc_url: String,
 
-    /// Shared HTTP endpoint for metrics and whitelist management.
-    pub prometheus: SocketAddr,
+    /// Admin HTTP endpoint for account management and optional metrics.
+    pub admin: SocketAddr,
+
+    /// Enable the `/metrics` endpoint on the admin HTTP server.
+    #[serde(default)]
+    pub metrics: bool,
 }
 
 impl Default for Config {
@@ -62,7 +66,8 @@ impl Default for Config {
             shutdown_timeout_ms: 30_000,
             update_account_topic: String::new(),
             local_rpc_url: String::new(),
-            prometheus: SocketAddr::from(([127, 0, 0, 1], 0)),
+            admin: SocketAddr::from(([127, 0, 0, 1], 0)),
+            metrics: false,
         }
     }
 }
@@ -113,9 +118,9 @@ impl Config {
             });
         }
 
-        if self.prometheus.port() == 0 {
+        if self.admin.port() == 0 {
             return Err(GeyserPluginError::ConfigFileReadError {
-                msg: "missing required config field `prometheus`".to_owned(),
+                msg: "invalid admin address: port 0 is not allowed".to_owned(),
             });
         }
 
@@ -127,7 +132,7 @@ impl Config {
         subs: AccountSubscriptions,
         initial_account_backfill: InitialAccountBackfillHandle,
     ) -> IoResult<HttpService> {
-        HttpService::new(self.prometheus, subs, initial_account_backfill)
+        HttpService::new(self.admin, subs, initial_account_backfill, self.metrics)
     }
 }
 
@@ -152,7 +157,7 @@ mod tests {
                 "kafka": {"bootstrap.servers": "localhost:9092"},
                 "update_account_topic": "solana.testnet.account_updates",
                 "local_rpc_url": "http://127.0.0.1:8899",
-                "prometheus": "127.0.0.1:8080"
+                "admin": "127.0.0.1:8080"
             }"#,
         )
         .unwrap();
@@ -165,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_prometheus() {
+    fn rejects_missing_admin() {
         let error = parse_config(
             r#"{
                 "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
@@ -176,7 +181,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("missing field `prometheus`"));
+        assert!(error.contains("missing field `admin`"));
     }
 
     #[test]
@@ -186,7 +191,7 @@ mod tests {
                 "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
                 "kafka": {"bootstrap.servers": "localhost:9092"},
                 "local_rpc_url": "http://127.0.0.1:8899",
-                "prometheus": "127.0.0.1:8080"
+                "admin": "127.0.0.1:8080"
             }"#,
         )
         .unwrap_err();
@@ -202,7 +207,7 @@ mod tests {
                 "kafka": {"bootstrap.servers": "localhost:9092"},
                 "update_account_topic": "solana.testnet.account_updates",
                 "local_rpc_url": "http://127.0.0.1:8899",
-                "prometheus": "127.0.0.1:8080",
+                "admin": "127.0.0.1:8080",
                 "filters": [
                     {"update_account_topic": "legacy"}
                 ]
@@ -211,5 +216,38 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("unknown field `filters`"));
+    }
+
+    #[test]
+    fn parses_config_with_metrics_enabled() {
+        let config = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080",
+                "metrics": true
+            }"#,
+        )
+        .unwrap();
+
+        assert!(config.metrics);
+    }
+
+    #[test]
+    fn metrics_defaults_to_false() {
+        let config = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080"
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!config.metrics);
     }
 }
