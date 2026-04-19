@@ -1,3 +1,4 @@
+mod accounts;
 pub mod prom;
 pub mod subscriptions;
 
@@ -86,7 +87,7 @@ async fn route(
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/metrics") if metrics_enabled => metrics_handler(),
         (&Method::POST, "/filters/accounts") => {
-            subscriptions::handle_post_accounts(req, subs, initial_account_backfill).await
+            accounts::handle_post_accounts(req, subs, initial_account_backfill).await
         }
         _ => not_found(),
     }
