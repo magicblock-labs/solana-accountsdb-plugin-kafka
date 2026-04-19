@@ -18,6 +18,7 @@ mod mapping;
 use {
     crate::{
         HttpService, InternalSlotStatus, Publisher,
+        metrics::StatsThreadedProducerContext,
         server::subscriptions::AccountSubscriptions,
         {Config, ConfirmedAccounts, InitialAccountBackfill},
     },
@@ -26,10 +27,12 @@ use {
         Result as PluginResult, SlotStatus as PluginSlotStatus,
     },
     log::{error, info},
+    rdkafka::{ClientConfig, config::FromClientConfigAndContext},
     rdkafka::util::get_rdkafka_version,
     std::{
         fmt::{Debug, Formatter},
         sync::{Arc, Mutex, MutexGuard},
+        time::Duration,
     },
 };
 
@@ -82,11 +85,22 @@ impl GeyserPlugin for KafkaPlugin {
         let (version_n, version_s) = get_rdkafka_version();
         info!("rd_kafka_version: {:#08x}, {}", version_n, version_s);
 
-        let producer = config.producer().map_err(|error| {
+        let mut producer_config = ClientConfig::new();
+        for (key, value) in &config.kafka {
+            producer_config.set(key, value);
+        }
+        let producer = rdkafka::producer::ThreadedProducer::from_config_and_context(
+            &producer_config,
+            StatsThreadedProducerContext,
+        )
+        .map_err(|error| {
             error!("Failed to create kafka producer: {error:?}");
             PluginError::Custom(Box::new(error))
         })?;
-        let publisher = Arc::new(Publisher::new(producer, &config));
+        let publisher = Arc::new(Publisher::new(
+            producer,
+            Duration::from_millis(config.shutdown_timeout_ms),
+        ));
         let update_account_topic = Arc::new(config.update_account_topic.clone());
         let initial_account_backfill = InitialAccountBackfill::new(
             publisher.clone(),
@@ -95,12 +109,13 @@ impl GeyserPlugin for KafkaPlugin {
             config.local_rpc_url.clone(),
         )
         .map_err(|error| PluginError::Custom(Box::new(error)))?;
-        let http_service = config
-            .create_http_service(
-                self.account_subscriptions.clone(),
-                initial_account_backfill.handle(),
-            )
-            .map_err(|error| PluginError::Custom(Box::new(error)))?;
+        let http_service = HttpService::new(
+            config.admin,
+            self.account_subscriptions.clone(),
+            initial_account_backfill.handle(),
+            config.metrics,
+        )
+        .map_err(|error| PluginError::Custom(Box::new(error)))?;
 
         self.publisher = Some(publisher);
         self.update_account_topic = Some(update_account_topic);

@@ -13,22 +13,12 @@
 // limitations under the License.
 
 use {
-    crate::InitialAccountBackfillHandle,
-    crate::metrics::StatsThreadedProducerContext,
-    crate::server::{
-        HttpService, subscriptions::AccountSubscriptions,
-    },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError, Result as PluginResult,
     },
-    rdkafka::{
-        ClientConfig,
-        config::FromClientConfigAndContext,
-        error::KafkaResult,
-        producer::{DefaultProducerContext, ThreadedProducer},
-    },
+    rdkafka::producer::{DefaultProducerContext, ThreadedProducer},
     serde::Deserialize,
-    std::{collections::HashMap, fs::File, io::Result as IoResult, net::SocketAddr, path::Path},
+    std::{collections::HashMap, fs::File, net::SocketAddr, path::Path},
 };
 
 /// Plugin config.
@@ -84,15 +74,6 @@ impl Config {
         Ok(this)
     }
 
-    /// Create rdkafka::FutureProducer from config.
-    pub fn producer(&self) -> KafkaResult<ThreadedProducer<StatsThreadedProducerContext>> {
-        let mut config = ClientConfig::new();
-        for (k, v) in self.kafka.iter() {
-            config.set(k, v);
-        }
-        ThreadedProducer::from_config_and_context(&config, StatsThreadedProducerContext)
-    }
-
     fn set_default(&mut self, k: &'static str, v: &'static str) {
         if !self.kafka.contains_key(k) {
             self.kafka.insert(k.to_owned(), v.to_owned());
@@ -126,14 +107,6 @@ impl Config {
         }
 
         Ok(())
-    }
-
-    pub fn create_http_service(
-        &self,
-        subs: AccountSubscriptions,
-        initial_account_backfill: InitialAccountBackfillHandle,
-    ) -> IoResult<HttpService> {
-        HttpService::new(self.admin, subs, initial_account_backfill, self.metrics)
     }
 }
 

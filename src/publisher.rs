@@ -14,7 +14,6 @@
 
 use {
     crate::{
-        Config,
         MessageWrapper, UpdateAccountEvent,
         message_wrapper::EventMessage::{self, Account},
         metrics::{StatsThreadedProducerContext, UPLOAD_ACCOUNTS_TOTAL},
@@ -37,11 +36,11 @@ pub struct Publisher {
 impl Publisher {
     pub fn new(
         producer: ThreadedProducer<StatsThreadedProducerContext>,
-        config: &Config,
+        shutdown_timeout: Duration,
     ) -> Self {
         Self {
             producer,
-            shutdown_timeout: Duration::from_millis(config.shutdown_timeout_ms),
+            shutdown_timeout,
         }
     }
 
