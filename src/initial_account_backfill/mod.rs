@@ -1,7 +1,6 @@
 use {
     crate::{
         account_update_publisher::{AccountUpdatePublishOutcome, publish_backfill_account_update},
-        event::UpdateAccountEvent,
         metrics::{
             INITIAL_BACKFILL_IN_FLIGHT, INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL,
             INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL, INITIAL_BACKFILL_RPC_FAILURES_TOTAL,
@@ -9,6 +8,7 @@ use {
         },
         publisher::Publisher,
         server::subscriptions::AccountSubscriptions,
+        wire::UpdateAccountEvent,
     },
     dashmap::DashMap,
     log::*,

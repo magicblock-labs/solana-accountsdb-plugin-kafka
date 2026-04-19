@@ -1,10 +1,10 @@
 use {
     crate::{
         account_update_publisher::publish_confirmed_account_update,
-        event::UpdateAccountEvent,
         initial_account_backfill::InitialAccountBackfillHandle,
         publisher::Publisher,
         server::subscriptions::AccountSubscriptions,
+        wire::UpdateAccountEvent,
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::Result as PluginResult,
 };

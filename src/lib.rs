@@ -16,16 +16,16 @@ use agave_geyser_plugin_interface::geyser_plugin_interface::GeyserPlugin;
 
 mod account_update_publisher;
 mod config;
-mod confirmed_accounts;
-mod event;
+mod confirmation_buffer;
 mod initial_account_backfill;
 mod metrics;
 mod plugin;
 mod publisher;
 mod server;
 mod version;
+mod wire;
 
-pub use {event::*, plugin::KafkaPlugin};
+pub use {plugin::KafkaPlugin, wire::*};
 
 #[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]

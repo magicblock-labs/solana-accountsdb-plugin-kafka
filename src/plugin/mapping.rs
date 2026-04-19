@@ -1,5 +1,5 @@
 use {
-    crate::event::UpdateAccountEvent,
+    crate::wire::UpdateAccountEvent,
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         ReplicaAccountInfoV3, ReplicaAccountInfoVersions,
     },
