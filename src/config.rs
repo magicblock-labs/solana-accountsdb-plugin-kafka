@@ -120,7 +120,7 @@ impl Config {
 
         if self.admin.port() == 0 {
             return Err(GeyserPluginError::ConfigFileReadError {
-                msg: "missing required config field `admin`".to_owned(),
+                msg: "invalid admin address: port 0 is not allowed".to_owned(),
             });
         }
 
