@@ -1,7 +1,7 @@
 use {
     crate::{
         AccountSubscriptions, Publisher, UpdateAccountEvent,
-        account_update_publisher::publish_account_update,
+        account_update_publisher::{AccountUpdatePublishOutcome, publish_backfill_account_update},
         server::prom::{
             INITIAL_BACKFILL_IN_FLIGHT, INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL,
             INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL, INITIAL_BACKFILL_RPC_FAILURES_TOTAL,
@@ -273,47 +273,32 @@ impl InitialAccountBackfillInner {
         };
         Self::record_in_flight_gauge(self.in_flight.len());
 
-        if in_flight.live_seen {
-            Self::record_snapshot("suppressed_live_seen");
-            info!(
-                "Suppressing initial account backfill snapshot for {} because a live update arrived first",
-                Pubkey::new_from_array(pubkey)
-            );
-            return Ok(());
-        }
-
-        if !self.subscriptions.contains_sync(&pubkey) {
-            Self::record_snapshot("skipped_unsubscribed");
-            debug!(
-                "Skipping initial account backfill snapshot for unsubscribed pubkey {}",
-                Pubkey::new_from_array(pubkey)
-            );
-            return Ok(());
-        }
-
         let Some(publisher) = self.publisher.as_deref() else {
             Self::record_snapshot("skipped_no_publisher");
             return Ok(());
         };
 
-        let result = publish_account_update(
+        let outcome = publish_backfill_account_update(
             publisher,
             self.update_account_topic.as_str(),
             &self.subscriptions,
+            pubkey,
+            in_flight.live_seen,
             event,
-        );
-        Self::record_snapshot(if result.is_ok() {
-            "published"
-        } else {
-            "publish_failed"
+        )?;
+        Self::record_snapshot(match outcome {
+            AccountUpdatePublishOutcome::Published => "published",
+            AccountUpdatePublishOutcome::SkippedStartupReplay => "skipped_startup_replay",
+            AccountUpdatePublishOutcome::SkippedUnsubscribed => "skipped_unsubscribed",
+            AccountUpdatePublishOutcome::SkippedLiveUpdateWon => "suppressed_live_seen",
         });
-        if result.is_ok() {
+        if matches!(outcome, AccountUpdatePublishOutcome::Published) {
             info!(
                 "Published initial account backfill snapshot for {}",
                 Pubkey::new_from_array(pubkey)
             );
         }
-        result
+        Ok(())
     }
 
     fn record_snapshot(label: &str) {
