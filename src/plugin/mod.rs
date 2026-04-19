@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod mapping;
+
 use {
     crate::{
         HttpService, InternalSlotStatus, Publisher, UpdateAccountEvent,
@@ -20,8 +22,8 @@ use {
         {Config, ConfirmedAccounts, InitialAccountBackfill},
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
-        GeyserPlugin, GeyserPluginError as PluginError, ReplicaAccountInfoV3,
-        ReplicaAccountInfoVersions, Result as PluginResult, SlotStatus as PluginSlotStatus,
+        GeyserPlugin, GeyserPluginError as PluginError, ReplicaAccountInfoVersions,
+        Result as PluginResult, SlotStatus as PluginSlotStatus,
     },
     log::{error, info},
     rdkafka::util::get_rdkafka_version,
@@ -124,8 +126,8 @@ impl GeyserPlugin for KafkaPlugin {
         slot: u64,
         is_startup: bool,
     ) -> PluginResult<()> {
-        let info = Self::unwrap_update_account(account);
-        let event = Self::build_update_account_event(info, slot, is_startup);
+        let info = mapping::unwrap_update_account(account);
+        let event = mapping::build_update_account_event(info, slot, is_startup);
         self.lock_confirmed_accounts()?.record_account(event);
         Ok(())
     }
@@ -175,43 +177,6 @@ impl KafkaPlugin {
         self.update_account_topic
             .as_deref()
             .expect("update_account_topic is unavailable")
-    }
-
-    fn unwrap_update_account(account: ReplicaAccountInfoVersions<'_>) -> &ReplicaAccountInfoV3<'_> {
-        match account {
-            ReplicaAccountInfoVersions::V0_0_1(_info) => {
-                panic!(
-                    "ReplicaAccountInfoVersions::V0_0_1 unsupported, please upgrade your Solana node."
-                );
-            }
-            ReplicaAccountInfoVersions::V0_0_2(_info) => {
-                panic!(
-                    "ReplicaAccountInfoVersions::V0_0_2 unsupported, please upgrade your Solana node."
-                );
-            }
-            ReplicaAccountInfoVersions::V0_0_3(info) => info,
-        }
-    }
-
-    fn build_update_account_event(
-        info: &ReplicaAccountInfoV3<'_>,
-        slot: u64,
-        is_startup: bool,
-    ) -> UpdateAccountEvent {
-        UpdateAccountEvent {
-            slot,
-            pubkey: info.pubkey.to_vec(),
-            lamports: info.lamports,
-            owner: info.owner.to_vec(),
-            executable: info.executable,
-            rent_epoch: info.rent_epoch,
-            data: info.data.to_vec(),
-            write_version: info.write_version,
-            txn_signature: info.txn.map(|v| v.signature().as_ref().to_owned()),
-            data_version: info.write_version as u32,
-            is_startup,
-            account_age: slot.saturating_sub(info.rent_epoch),
-        }
     }
 
     fn publish_confirmed_account_updates(
