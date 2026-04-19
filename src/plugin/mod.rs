@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod dispatch;
 mod mapping;
 
 use {
     crate::{
-        HttpService, InternalSlotStatus, Publisher, UpdateAccountEvent,
-        account_update_publisher::publish_account_update,
+        HttpService, InternalSlotStatus, Publisher,
         server::subscriptions::AccountSubscriptions,
         {Config, ConfirmedAccounts, InitialAccountBackfill},
     },
@@ -144,7 +144,13 @@ impl GeyserPlugin for KafkaPlugin {
             InternalSlotStatus::from(status.clone()),
         );
 
-        self.publish_confirmed_account_updates(transition.confirmed_updates)
+        dispatch::publish_confirmed_account_updates(
+            self.unwrap_publisher(),
+            self.update_account_topic(),
+            &self.account_subscriptions,
+            &self.initial_account_backfill.handle(),
+            transition.confirmed_updates,
+        )
     }
 
     fn account_data_notifications_enabled(&self) -> bool {
@@ -178,48 +184,11 @@ impl KafkaPlugin {
             .as_deref()
             .expect("update_account_topic is unavailable")
     }
-
-    fn publish_confirmed_account_updates(
-        &self,
-        updates: Vec<UpdateAccountEvent>,
-    ) -> PluginResult<()> {
-        if updates.is_empty() {
-            return Ok(());
-        }
-
-        let publisher = self.unwrap_publisher();
-        let topic = self.update_account_topic();
-        let mut first_error = None;
-
-        for event in updates {
-            if !Self::should_publish_confirmed_update(&event) {
-                continue;
-            }
-
-            if let Ok(pubkey) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
-                self.initial_account_backfill
-                    .handle()
-                    .mark_live_update_seen(&pubkey);
-            }
-            if let Err(error) =
-                publish_account_update(publisher, topic, &self.account_subscriptions, event)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-        }
-
-        first_error.map_or(Ok(()), Err)
-    }
-
-    fn should_publish_confirmed_update(event: &UpdateAccountEvent) -> bool {
-        !event.is_startup
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::KafkaPlugin;
+    use super::dispatch;
     use crate::UpdateAccountEvent;
 
     fn sample_event(is_startup: bool) -> UpdateAccountEvent {
@@ -241,14 +210,14 @@ mod tests {
 
     #[test]
     fn startup_replay_updates_are_not_published_from_confirmed_buffer() {
-        assert!(!KafkaPlugin::should_publish_confirmed_update(
-            &sample_event(true)
-        ));
+        assert!(!dispatch::should_publish_confirmed_update(&sample_event(
+            true
+        )));
     }
 
     #[test]
     fn live_updates_are_published_from_confirmed_buffer() {
-        assert!(KafkaPlugin::should_publish_confirmed_update(&sample_event(
+        assert!(dispatch::should_publish_confirmed_update(&sample_event(
             false
         )));
     }
