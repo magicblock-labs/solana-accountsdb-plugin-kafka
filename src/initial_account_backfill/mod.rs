@@ -2,7 +2,6 @@ use {
     crate::{
         AccountSubscriptions, Publisher, UpdateAccountEvent,
         account_update_publisher::publish_account_update,
-        initial_account_backfill_rpc::fetch_account_events_for_request,
         server::prom::{
             INITIAL_BACKFILL_IN_FLIGHT, INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL,
             INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL, INITIAL_BACKFILL_RPC_FAILURES_TOTAL,
@@ -20,6 +19,8 @@ use {
         sync::mpsc::{self, error::TrySendError},
     },
 };
+
+mod rpc;
 
 pub const INITIAL_BACKFILL_QUEUE_CAPACITY: usize = 1024;
 pub const INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST: usize = 100;
@@ -209,7 +210,7 @@ struct InitialAccountBackfillInner {
 
 impl InitialAccountBackfillInner {
     async fn process_request(&self, pubkeys: &[[u8; 32]]) {
-        match fetch_account_events_for_request(&self.client, pubkeys).await {
+        match rpc::fetch_account_events_for_request(&self.client, pubkeys).await {
             Ok(events) => {
                 info!(
                     "Initial account backfill RPC request succeeded for {} pubkeys",
@@ -330,9 +331,6 @@ impl InitialAccountBackfillInner {
 mod tests {
     use {
         super::*,
-        crate::initial_account_backfill_rpc::{
-            SYSTEM_PROGRAM_ID, map_existing_account, map_missing_account,
-        },
         solana_account::Account,
         tokio::sync::mpsc,
     };
@@ -366,7 +364,7 @@ mod tests {
 
     #[test]
     fn existing_account_maps_to_expected_update_event() {
-        let event = map_existing_account(
+        let event = rpc::map_existing_account(
             Account {
                 lamports: 42,
                 data: vec![1, 2, 3],
@@ -394,12 +392,12 @@ mod tests {
 
     #[test]
     fn missing_account_maps_to_sentinel_event() {
-        let event = map_missing_account(55, pk(2));
+        let event = rpc::map_missing_account(55, pk(2));
 
         assert_eq!(event.slot, 55);
         assert_eq!(event.pubkey, pk(2).to_vec());
         assert_eq!(event.lamports, 0);
-        assert_eq!(event.owner, SYSTEM_PROGRAM_ID.to_bytes().to_vec());
+        assert_eq!(event.owner, rpc::SYSTEM_PROGRAM_ID.to_bytes().to_vec());
         assert!(!event.executable);
         assert_eq!(event.rent_epoch, 0);
         assert!(event.data.is_empty());
@@ -452,7 +450,7 @@ mod tests {
         let _ = handle.enqueue(vec![pubkey]);
         handle.mark_live_update_seen(&pubkey);
 
-        let result = inner.complete_backfill_event(map_missing_account(1, pubkey));
+        let result = inner.complete_backfill_event(rpc::map_missing_account(1, pubkey));
 
         assert!(result.is_ok());
         assert!(!inner.in_flight.contains_key(&pubkey));
