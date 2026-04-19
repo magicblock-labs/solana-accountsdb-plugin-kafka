@@ -16,7 +16,6 @@ use {
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError, Result as PluginResult,
     },
-    rdkafka::producer::{DefaultProducerContext, ThreadedProducer},
     serde::Deserialize,
     std::{collections::HashMap, fs::File, net::SocketAddr, path::Path},
 };
@@ -109,8 +108,6 @@ impl Config {
         Ok(())
     }
 }
-
-pub type Producer = ThreadedProducer<DefaultProducerContext>;
 
 #[cfg(test)]
 mod tests {

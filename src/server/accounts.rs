@@ -1,6 +1,6 @@
 use {
     super::subscriptions::AccountSubscriptions,
-    crate::InitialAccountBackfillHandle,
+    crate::initial_account_backfill::InitialAccountBackfillHandle,
     bytes::Bytes,
     http::StatusCode,
     http_body_util::{Full, Limited},

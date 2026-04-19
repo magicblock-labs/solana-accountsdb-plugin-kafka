@@ -1,6 +1,6 @@
 use {
     crate::{
-        UpdateAccountEvent,
+        event::UpdateAccountEvent,
         initial_account_backfill::{
             INITIAL_BACKFILL_INITIAL_BACKOFF_MS, INITIAL_BACKFILL_MAX_ATTEMPTS,
             INITIAL_BACKFILL_MAX_BACKOFF_MS, INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST,

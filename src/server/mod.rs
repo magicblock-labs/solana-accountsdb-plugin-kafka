@@ -3,8 +3,7 @@ pub mod prom;
 pub mod subscriptions;
 
 use {
-    crate::InitialAccountBackfillHandle,
-    crate::metrics::register_metrics,
+    crate::{initial_account_backfill::InitialAccountBackfillHandle, metrics::register_metrics},
     bytes::Bytes,
     http::StatusCode,
     http_body_util::Full,

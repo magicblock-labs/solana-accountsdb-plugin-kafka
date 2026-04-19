@@ -1,12 +1,14 @@
 use {
     crate::{
-        AccountSubscriptions, Publisher, UpdateAccountEvent,
         account_update_publisher::{AccountUpdatePublishOutcome, publish_backfill_account_update},
+        event::UpdateAccountEvent,
         metrics::{
             INITIAL_BACKFILL_IN_FLIGHT, INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL,
             INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL, INITIAL_BACKFILL_RPC_FAILURES_TOTAL,
             INITIAL_BACKFILL_SNAPSHOTS_TOTAL,
         },
+        publisher::Publisher,
+        server::subscriptions::AccountSubscriptions,
     },
     dashmap::DashMap,
     log::*,
@@ -316,6 +318,7 @@ impl InitialAccountBackfillInner {
 mod tests {
     use {
         super::*,
+        crate::server::subscriptions::AccountSubscriptions,
         solana_account::Account,
         tokio::sync::mpsc,
     };

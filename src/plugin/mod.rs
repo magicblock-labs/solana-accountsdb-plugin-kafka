@@ -17,10 +17,13 @@ mod mapping;
 
 use {
     crate::{
-        HttpService, InternalSlotStatus, Publisher,
+        config::Config,
+        confirmed_accounts::{ConfirmedAccounts, InternalSlotStatus},
+        initial_account_backfill::InitialAccountBackfill,
         metrics::StatsThreadedProducerContext,
+        publisher::Publisher,
+        server::HttpService,
         server::subscriptions::AccountSubscriptions,
-        {Config, ConfirmedAccounts, InitialAccountBackfill},
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPlugin, GeyserPluginError as PluginError, ReplicaAccountInfoVersions,

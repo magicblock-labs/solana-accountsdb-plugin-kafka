@@ -25,20 +25,7 @@ mod publisher;
 mod server;
 mod version;
 
-pub use {
-    config::{Config, Producer},
-    confirmed_accounts::{ConfirmedAccounts, InternalSlotStatus, SlotTransitionResult},
-    event::*,
-    initial_account_backfill::{
-        EnqueueResult, INITIAL_BACKFILL_INITIAL_BACKOFF_MS, INITIAL_BACKFILL_MAX_ATTEMPTS,
-        INITIAL_BACKFILL_MAX_BACKOFF_MS, INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST,
-        INITIAL_BACKFILL_QUEUE_CAPACITY, InitialAccountBackfill, InitialAccountBackfillHandle,
-    },
-    metrics::StatsThreadedProducerContext,
-    plugin::KafkaPlugin,
-    publisher::Publisher,
-    server::{HttpService, subscriptions::AccountSubscriptions},
-};
+pub use {event::*, plugin::KafkaPlugin};
 
 #[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]

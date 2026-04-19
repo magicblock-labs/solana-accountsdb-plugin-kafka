@@ -1,5 +1,10 @@
 use {
-    crate::{AccountSubscriptions, InitialAccountBackfillHandle, Publisher, UpdateAccountEvent},
+    crate::{
+        event::UpdateAccountEvent,
+        initial_account_backfill::InitialAccountBackfillHandle,
+        publisher::Publisher,
+        server::subscriptions::AccountSubscriptions,
+    },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError as PluginError, Result as PluginResult,
     },
@@ -138,7 +143,7 @@ mod tests {
         AccountUpdatePublishOutcome, should_publish_backfill_account,
         should_publish_confirmed_account,
     };
-    use crate::{AccountSubscriptions, UpdateAccountEvent};
+    use crate::{event::UpdateAccountEvent, server::subscriptions::AccountSubscriptions};
 
     fn sample_event(is_startup: bool) -> UpdateAccountEvent {
         UpdateAccountEvent {
