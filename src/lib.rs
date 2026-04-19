@@ -19,6 +19,7 @@ mod config;
 mod confirmed_accounts;
 mod event;
 mod initial_account_backfill;
+mod initial_account_backfill_rpc;
 mod plugin;
 mod publisher;
 mod server;
