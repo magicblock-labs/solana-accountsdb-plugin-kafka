@@ -20,16 +20,20 @@ use {
         config::Config,
         confirmation_buffer::{ConfirmedAccounts, InternalSlotStatus},
         initial_account_backfill::InitialAccountBackfill,
+        ksql::{INIT_TRACKING_RESTORE_CHUNK_SIZE, KsqlPubkeyRestoreClient},
         metrics::StatsThreadedProducerContext,
         publisher::Publisher,
-        server::HttpService,
         server::subscriptions::AccountSubscriptions,
+        server::{
+            HttpService,
+            accounts::{AddAccountsError, AddAccountsOutcome, add_accounts},
+        },
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPlugin, GeyserPluginError as PluginError, ReplicaAccountInfoVersions,
         Result as PluginResult, SlotStatus as PluginSlotStatus,
     },
-    log::{error, info},
+    log::{error, info, warn},
     rdkafka::util::get_rdkafka_version,
     rdkafka::{ClientConfig, config::FromClientConfigAndContext},
     std::{
@@ -112,6 +116,11 @@ impl GeyserPlugin for KafkaPlugin {
             config.local_rpc_url.clone(),
         )
         .map_err(|error| PluginError::Custom(Box::new(error)))?;
+        Self::restore_tracking_from_ksql(
+            &config,
+            &self.account_subscriptions,
+            &initial_account_backfill,
+        )?;
         let http_service = HttpService::new(
             config.admin,
             self.account_subscriptions.clone(),
@@ -201,5 +210,224 @@ impl KafkaPlugin {
         self.update_account_topic
             .as_deref()
             .expect("update_account_topic is unavailable")
+    }
+
+    fn restore_tracking_from_ksql(
+        config: &Config,
+        account_subscriptions: &AccountSubscriptions,
+        initial_account_backfill: &InitialAccountBackfill,
+    ) -> PluginResult<()> {
+        let Some(url) = config.init_tracking_from_ksql_url.as_deref() else {
+            return Ok(());
+        };
+
+        let table = &config.init_tracking_from_ksql_table;
+        info!("Startup ksql restore enabled, url={}, table={}", url, table);
+
+        let client = KsqlPubkeyRestoreClient::new(url, table)
+            .map_err(|error| PluginError::Custom(Box::new(error)))?;
+        let pubkeys = client
+            .fetch_pubkeys()
+            .map_err(|error| PluginError::Custom(Box::new(error)))?;
+        let fetched_count = pubkeys.len();
+        info!(
+            "Fetched {} pubkeys from ksql startup restore",
+            fetched_count
+        );
+
+        let summary = restore_pubkeys_in_chunks(
+            account_subscriptions,
+            initial_account_backfill.handle_ref(),
+            pubkeys,
+        )
+        .map_err(add_accounts_error_to_plugin_error)?;
+
+        info!(
+            "Completed startup ksql restore, fetched_count={}, deduplicated_count={}, chunk_count={}, accepted_count={}, newly_added_count={}, retried_backfill_count={}, duplicate_count={}",
+            fetched_count,
+            summary.deduplicated_count,
+            summary.chunk_count,
+            summary.accepted_count,
+            summary.newly_added_count,
+            summary.retried_backfill_count,
+            summary.duplicate_count
+        );
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RestoreTrackingSummary {
+    deduplicated_count: usize,
+    chunk_count: usize,
+    accepted_count: usize,
+    newly_added_count: usize,
+    retried_backfill_count: usize,
+    duplicate_count: usize,
+}
+
+fn restore_pubkeys_in_chunks(
+    account_subscriptions: &AccountSubscriptions,
+    initial_account_backfill: &crate::initial_account_backfill::InitialAccountBackfillHandle,
+    mut pubkeys: Vec<[u8; 32]>,
+) -> Result<RestoreTrackingSummary, AddAccountsError> {
+    pubkeys.sort();
+    pubkeys.dedup();
+
+    let mut summary = RestoreTrackingSummary {
+        deduplicated_count: pubkeys.len(),
+        ..RestoreTrackingSummary::default()
+    };
+
+    for chunk in pubkeys.chunks(INIT_TRACKING_RESTORE_CHUNK_SIZE) {
+        let outcome = add_accounts(
+            account_subscriptions,
+            initial_account_backfill,
+            chunk.to_vec(),
+        )?;
+        log_restore_chunk_outcome(&outcome);
+        summary.chunk_count += 1;
+        summary.accepted_count += outcome.accepted_count;
+        summary.newly_added_count += outcome.newly_added_count;
+        summary.retried_backfill_count += outcome.retried_backfill_count;
+        summary.duplicate_count += outcome.duplicate_count;
+    }
+
+    Ok(summary)
+}
+
+fn log_restore_chunk_outcome(outcome: &AddAccountsOutcome) {
+    info!(
+        "Processed startup restore chunk, accepted_count={}, newly_added_count={}, retried_backfill_count={}, duplicate_count={}, active_count={}, needs_backfill_count={}",
+        outcome.accepted_count,
+        outcome.newly_added_count,
+        outcome.retried_backfill_count,
+        outcome.duplicate_count,
+        outcome.active_count,
+        outcome.needs_backfill_count
+    );
+}
+
+fn add_accounts_error_to_plugin_error(error: AddAccountsError) -> PluginError {
+    match error {
+        AddAccountsError::QueueFull(outcome) => {
+            warn!(
+                "Startup ksql restore failed because initial backfill queue is full, accepted_count={}, newly_added_count={}, retried_backfill_count={}, duplicate_count={}, needs_backfill_count={}",
+                outcome.accepted_count,
+                outcome.newly_added_count,
+                outcome.retried_backfill_count,
+                outcome.duplicate_count,
+                outcome.needs_backfill_count
+            );
+            PluginError::Custom(Box::new(std::io::Error::other(format!(
+                "startup ksql restore failed: initial backfill queue full, accepted_count={}, newly_added_count={}, retried_backfill_count={}, duplicate_count={}, needs_backfill_count={}",
+                outcome.accepted_count,
+                outcome.newly_added_count,
+                outcome.retried_backfill_count,
+                outcome.duplicate_count,
+                outcome.needs_backfill_count
+            ))))
+        }
+        AddAccountsError::BackfillUnavailable(outcome) => {
+            error!(
+                "Startup ksql restore failed because initial backfill is unavailable, accepted_count={}, newly_added_count={}, retried_backfill_count={}, duplicate_count={}, needs_backfill_count={}",
+                outcome.accepted_count,
+                outcome.newly_added_count,
+                outcome.retried_backfill_count,
+                outcome.duplicate_count,
+                outcome.needs_backfill_count
+            );
+            PluginError::Custom(Box::new(std::io::Error::other(format!(
+                "startup ksql restore failed: initial backfill unavailable, accepted_count={}, newly_added_count={}, retried_backfill_count={}, duplicate_count={}, needs_backfill_count={}",
+                outcome.accepted_count,
+                outcome.newly_added_count,
+                outcome.retried_backfill_count,
+                outcome.duplicate_count,
+                outcome.needs_backfill_count
+            ))))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::{KafkaPlugin, restore_pubkeys_in_chunks},
+        crate::{
+            config::Config, initial_account_backfill::InitialAccountBackfillHandle,
+            ksql::INIT_TRACKING_RESTORE_CHUNK_SIZE, server::subscriptions::AccountSubscriptions,
+        },
+    };
+
+    fn pk(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    #[test]
+    fn restore_tracking_from_ksql_is_noop_when_disabled() {
+        let config = Config::default();
+        let subs = AccountSubscriptions::new();
+        let initial_account_backfill =
+            crate::initial_account_backfill::InitialAccountBackfill::default();
+
+        let result =
+            KafkaPlugin::restore_tracking_from_ksql(&config, &subs, &initial_account_backfill);
+
+        assert!(result.is_ok());
+        assert!(!subs.contains_sync(&pk(1)));
+    }
+
+    #[test]
+    fn restore_pubkeys_in_chunks_deduplicates_before_subscribing() {
+        let subs = AccountSubscriptions::new();
+        let test_handle = InitialAccountBackfillHandle::new_test(8);
+
+        let summary =
+            restore_pubkeys_in_chunks(&subs, &test_handle, vec![pk(1), pk(1), pk(2), pk(2), pk(3)])
+                .unwrap();
+
+        assert_eq!(summary.deduplicated_count, 3);
+        assert_eq!(summary.accepted_count, 3);
+        assert_eq!(summary.newly_added_count, 3);
+        assert_eq!(summary.duplicate_count, 0);
+        assert!(subs.contains_sync(&pk(1)));
+        assert!(subs.contains_sync(&pk(2)));
+        assert!(subs.contains_sync(&pk(3)));
+    }
+
+    #[test]
+    fn restore_pubkeys_in_chunks_handles_chunk_boundaries() {
+        let subs = AccountSubscriptions::new();
+        let test_handle = InitialAccountBackfillHandle::new_test(8);
+        let pubkeys = (0..=INIT_TRACKING_RESTORE_CHUNK_SIZE)
+            .map(|index| {
+                let mut pubkey = [0_u8; 32];
+                pubkey[0] = (index & 0xff) as u8;
+                pubkey[1] = ((index >> 8) & 0xff) as u8;
+                pubkey
+            })
+            .collect::<Vec<_>>();
+
+        let summary = restore_pubkeys_in_chunks(&subs, &test_handle, pubkeys).unwrap();
+
+        assert_eq!(
+            summary.deduplicated_count,
+            INIT_TRACKING_RESTORE_CHUNK_SIZE + 1
+        );
+        assert_eq!(summary.chunk_count, 2);
+        assert_eq!(summary.accepted_count, INIT_TRACKING_RESTORE_CHUNK_SIZE + 1);
+    }
+
+    #[test]
+    fn restore_pubkeys_in_chunks_aborts_when_queue_is_full() {
+        let subs = AccountSubscriptions::new();
+        let test_handle = InitialAccountBackfillHandle::new_test(1);
+        test_handle.prefill_queue_for_test(vec![pk(9)]);
+
+        let error = restore_pubkeys_in_chunks(&subs, &test_handle, vec![pk(7), pk(8)]);
+
+        assert!(error.is_err());
+        assert_eq!(subs.needs_backfill_count(), 2);
     }
 }

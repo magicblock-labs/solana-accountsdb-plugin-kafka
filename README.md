@@ -30,7 +30,8 @@ This plugin publishes confirmed Solana account updates to Kafka.
   "shutdown_timeout_ms": 30000,
   "update_account_topic": "solana.testnet.account_updates",
   "local_rpc_url": "http://127.0.0.1:8899",
-  "admin": "127.0.0.1:8080"
+  "admin": "127.0.0.1:8080",
+  "init_tracking_from_ksql_url": "http://127.0.0.1:8088"
 }
 ```
 
@@ -79,6 +80,7 @@ Supported fields:
 - `local_rpc_url`: local validator RPC endpoint used for initial account backfill
 - `admin`: required listen address for the admin HTTP API (account management and metrics)
 - `metrics`: optional boolean (default `false`); set to `true` to enable the `/metrics` endpoint
+- `init_tracking_from_ksql_url`: optional ksqlDB base URL; when set, startup restores tracked pubkeys from `accounts` and fails fast if restore cannot complete
 
 Minimal config:
 
@@ -94,7 +96,7 @@ Minimal config:
 }
 ```
 
-`update_account_topic`, `local_rpc_url`, and `admin` are required. The `admin` bind address serves `POST /filters/accounts` and, when `metrics` is `true`, also `GET /metrics`. Legacy filter arrays and legacy transaction, slot-status, block, and wrapping options are rejected during config parsing.
+`update_account_topic`, `local_rpc_url`, and `admin` are required. The `admin` bind address serves `POST /filters/accounts` and, when `metrics` is `true`, also `GET /metrics`. If `init_tracking_from_ksql_url` is set, it must be a valid absolute `http` or `https` base URL and startup will fail if the restore query cannot complete. Legacy filter arrays and legacy transaction, slot-status, block, and wrapping options are rejected during config parsing.
 
 ## Whitelist Management
 
@@ -103,6 +105,7 @@ Account inclusion is managed through the HTTP API:
 - `POST /filters/accounts` adds accounts to the active whitelist
 - newly added accounts are queued for initial backfill from the local RPC endpoint
 - live updates and backfill snapshots are both gated by the same whitelist
+- optional startup restore can replay previously tracked pubkeys from ksqlDB through the same whitelist and backfill path
 
 Startup replay updates are not used as a second bootstrap publication path; subscribed bootstrap delivery comes from the initial RPC backfill flow.
 

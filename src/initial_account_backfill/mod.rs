@@ -189,6 +189,37 @@ impl InitialAccountBackfillHandle {
         }
         INITIAL_BACKFILL_IN_FLIGHT.set(self.inner.in_flight.len() as i64);
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_test(channel_capacity: usize) -> TestBackfillHandle {
+        let (inner, rx) = tests::test_inner(channel_capacity);
+        TestBackfillHandle {
+            handle: Self { inner },
+            _rx: rx,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prefill_queue_for_test(&self, pubkeys: Vec<[u8; 32]>) {
+        self.inner
+            .tx
+            .try_send(BackfillRequest { pubkeys })
+            .expect("failed to prefill test backfill queue");
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestBackfillHandle {
+    pub handle: InitialAccountBackfillHandle,
+    _rx: tokio::sync::mpsc::Receiver<BackfillRequest>,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestBackfillHandle {
+    type Target = InitialAccountBackfillHandle;
+    fn deref(&self) -> &Self::Target {
+        &self.handle
+    }
 }
 
 pub struct EnqueueResult {
@@ -329,7 +360,7 @@ mod tests {
         [byte; 32]
     }
 
-    fn test_inner(
+    pub(super) fn test_inner(
         channel_capacity: usize,
     ) -> (
         Arc<InitialAccountBackfillInner>,
