@@ -1,5 +1,6 @@
 use {
     base64::Engine,
+    log::debug,
     reqwest::{Url, blocking::Client, header::CONTENT_TYPE},
     serde_json::Value,
     std::io,
@@ -29,12 +30,19 @@ impl KsqlPubkeyRestoreClient {
     }
 
     pub(crate) fn fetch_pubkeys(&self) -> io::Result<Vec<[u8; 32]>> {
+        let sql = format!("SELECT PUBKEY FROM {};", INIT_TRACKING_KSQL_TABLE);
+        let query_url = format!("{}/query-stream", self.base_url);
+        debug!(
+            "Querying ksql for startup restore, url={}, sql={}",
+            query_url, sql
+        );
+
         let response = self
             .client
-            .post(format!("{}/query-stream", self.base_url))
+            .post(&query_url)
             .header(CONTENT_TYPE, "application/vnd.ksql.v1+json; charset=utf-8")
             .json(&serde_json::json!({
-                "sql": format!("SELECT PUBKEY FROM {};", INIT_TRACKING_KSQL_TABLE),
+                "sql": sql,
             }))
             .send()
             .map_err(|error| io::Error::other(format!("failed to query ksqlDB: {error}")))?
@@ -45,7 +53,12 @@ impl KsqlPubkeyRestoreClient {
             .text()
             .map_err(|error| io::Error::other(format!("failed to read ksqlDB body: {error}")))?;
 
-        parse_pubkeys_response(&body)
+        let pubkeys = parse_pubkeys_response(&body)?;
+        debug!(
+            "Parsed ksql startup restore response, found_pubkeys={}",
+            pubkeys.len()
+        );
+        Ok(pubkeys)
     }
 }
 

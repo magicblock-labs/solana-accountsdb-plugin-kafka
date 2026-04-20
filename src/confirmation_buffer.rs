@@ -1,7 +1,7 @@
 use {
     crate::wire::UpdateAccountEvent,
     agave_geyser_plugin_interface::geyser_plugin_interface::SlotStatus as PluginSlotStatus,
-    log::{debug, error, warn},
+    log::*,
     solana_pubkey::Pubkey,
     std::collections::{HashMap, HashSet},
 };
@@ -208,7 +208,7 @@ impl ConfirmedAccounts {
 
         let drained_updates = self.drain_slot_updates(slot);
         if !drained_updates.is_empty() {
-            debug!(
+            trace!(
                 "slot {} confirmed with {} buffered account updates",
                 slot,
                 drained_updates.len()
@@ -217,7 +217,7 @@ impl ConfirmedAccounts {
         confirmed_updates.extend(drained_updates);
 
         if let Some(parent_slot) = parent {
-            debug!(
+            trace!(
                 "slot {} confirmation allows ancestor inference toward parent {}",
                 slot, parent_slot
             );

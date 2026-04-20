@@ -6,7 +6,7 @@ use {
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError as PluginError, Result as PluginResult,
     },
-    log::{debug, error, log_enabled},
+    log::*,
     solana_pubkey::Pubkey,
 };
 
@@ -127,7 +127,7 @@ fn should_publish_subscribed_account(subs: &AccountSubscriptions, pubkey: &[u8])
 fn log_ignore_account_update(pubkey: &[u8]) {
     if log_enabled!(::log::Level::Debug) {
         match <&[u8; 32]>::try_from(pubkey) {
-            Ok(key) => debug!(
+            Ok(key) => trace!(
                 "Ignoring update for account key: {:?}",
                 Pubkey::new_from_array(*key)
             ),
@@ -139,8 +139,8 @@ fn log_ignore_account_update(pubkey: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountUpdatePublishOutcome, should_publish_backfill_account,
-        should_publish_confirmed_account,
+        should_publish_backfill_account, should_publish_confirmed_account,
+        AccountUpdatePublishOutcome,
     };
     use crate::{server::subscriptions::AccountSubscriptions, wire::UpdateAccountEvent};
 
