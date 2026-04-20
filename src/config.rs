@@ -16,6 +16,7 @@ use {
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError, Result as PluginResult,
     },
+    reqwest::Url,
     serde::Deserialize,
     std::{collections::HashMap, fs::File, net::SocketAddr, path::Path},
 };
@@ -46,6 +47,10 @@ pub struct Config {
     /// Enable the `/metrics` endpoint on the admin HTTP server.
     #[serde(default)]
     pub metrics: bool,
+
+    /// Optional ksqlDB base URL used to restore tracked pubkeys during startup.
+    #[serde(default)]
+    pub init_tracking_from_ksql_url: Option<String>,
 }
 
 impl Default for Config {
@@ -58,6 +63,7 @@ impl Default for Config {
             local_rpc_url: String::new(),
             admin: SocketAddr::from(([127, 0, 0, 1], 0)),
             metrics: false,
+            init_tracking_from_ksql_url: None,
         }
     }
 }
@@ -103,6 +109,40 @@ impl Config {
             return Err(GeyserPluginError::ConfigFileReadError {
                 msg: "invalid admin address: port 0 is not allowed".to_owned(),
             });
+        }
+
+        if let Some(url) = &self.init_tracking_from_ksql_url {
+            let trimmed = url.trim();
+            if trimmed.is_empty() {
+                return Err(GeyserPluginError::ConfigFileReadError {
+                    msg:
+                        "invalid config field `init_tracking_from_ksql_url`: URL must not be empty"
+                            .to_owned(),
+                });
+            }
+
+            let parsed =
+                Url::parse(trimmed).map_err(|error| GeyserPluginError::ConfigFileReadError {
+                    msg: format!("invalid config field `init_tracking_from_ksql_url`: {error}"),
+                })?;
+
+            match parsed.scheme() {
+                "http" | "https" => {}
+                scheme => {
+                    return Err(GeyserPluginError::ConfigFileReadError {
+                        msg: format!(
+                            "invalid config field `init_tracking_from_ksql_url`: unsupported scheme `{scheme}`"
+                        ),
+                    });
+                }
+            }
+
+            if !parsed.has_host() {
+                return Err(GeyserPluginError::ConfigFileReadError {
+                    msg: "invalid config field `init_tracking_from_ksql_url`: host is required"
+                        .to_owned(),
+                });
+            }
         }
 
         Ok(())
@@ -220,5 +260,92 @@ mod tests {
         .unwrap();
 
         assert!(!config.metrics);
+    }
+
+    #[test]
+    fn parses_config_without_ksql_startup_restore_url() {
+        let config = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.init_tracking_from_ksql_url, None);
+    }
+
+    #[test]
+    fn parses_config_with_valid_ksql_startup_restore_url() {
+        let config = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080",
+                "init_tracking_from_ksql_url": "https://127.0.0.1:8088"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.init_tracking_from_ksql_url.as_deref(),
+            Some("https://127.0.0.1:8088")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_ksql_startup_restore_url() {
+        let error = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080",
+                "init_tracking_from_ksql_url": "   "
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("URL must not be empty"));
+    }
+
+    #[test]
+    fn rejects_ksql_startup_restore_url_without_scheme() {
+        let error = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080",
+                "init_tracking_from_ksql_url": "127.0.0.1:8088"
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("relative URL without a base"));
+    }
+
+    #[test]
+    fn rejects_ksql_startup_restore_url_without_host() {
+        let error = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080",
+                "init_tracking_from_ksql_url": "http://:8088"
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("empty host") || error.contains("host is required"));
     }
 }
