@@ -116,6 +116,11 @@ impl GeyserPlugin for KafkaPlugin {
             config.local_rpc_url.clone(),
         )
         .map_err(|error| PluginError::Custom(Box::new(error)))?;
+        Self::restore_tracking_from_ksql(
+            &config,
+            &self.account_subscriptions,
+            &initial_account_backfill,
+        )?;
         let http_service = HttpService::new(
             config.admin,
             self.account_subscriptions.clone(),
@@ -123,11 +128,6 @@ impl GeyserPlugin for KafkaPlugin {
             config.metrics,
         )
         .map_err(|error| PluginError::Custom(Box::new(error)))?;
-        Self::restore_tracking_from_ksql(
-            &config,
-            &self.account_subscriptions,
-            &initial_account_backfill,
-        )?;
 
         self.publisher = Some(publisher);
         self.update_account_topic = Some(update_account_topic);
