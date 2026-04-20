@@ -226,16 +226,13 @@ impl KafkaPlugin {
 
         let client = KsqlPubkeyRestoreClient::new(url, table)
             .map_err(|error| PluginError::Custom(Box::new(error)))?;
-        let mut pubkeys = client
+        let pubkeys = client
             .fetch_pubkeys()
             .map_err(|error| PluginError::Custom(Box::new(error)))?;
         let fetched_count = pubkeys.len();
-        pubkeys.sort();
-        pubkeys.dedup();
         info!(
-            "Fetched {} pubkeys from ksql startup restore, deduplicated_count={}",
-            fetched_count,
-            pubkeys.len()
+            "Fetched {} pubkeys from ksql startup restore",
+            fetched_count
         );
 
         let summary = restore_pubkeys_in_chunks(
