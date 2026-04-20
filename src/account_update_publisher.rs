@@ -1,9 +1,7 @@
 use {
     crate::{
-        initial_account_backfill::InitialAccountBackfillHandle,
-        publisher::Publisher,
-        server::subscriptions::AccountSubscriptions,
-        wire::UpdateAccountEvent,
+        initial_account_backfill::InitialAccountBackfillHandle, publisher::Publisher,
+        server::subscriptions::AccountSubscriptions, wire::UpdateAccountEvent,
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
         GeyserPluginError as PluginError, Result as PluginResult,

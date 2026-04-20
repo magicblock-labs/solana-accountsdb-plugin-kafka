@@ -321,9 +321,7 @@ impl InitialAccountBackfillInner {
 #[cfg(test)]
 mod tests {
     use {
-        super::*,
-        crate::server::subscriptions::AccountSubscriptions,
-        solana_account::Account,
+        super::*, crate::server::subscriptions::AccountSubscriptions, solana_account::Account,
         tokio::sync::mpsc,
     };
 

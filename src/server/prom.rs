@@ -1,9 +1,5 @@
 use {
-    crate::metrics::REGISTRY,
-    bytes::Bytes,
-    http_body_util::Full,
-    hyper::Response,
-    log::*,
+    crate::metrics::REGISTRY, bytes::Bytes, http_body_util::Full, hyper::Response, log::*,
     prometheus::TextEncoder,
 };
 

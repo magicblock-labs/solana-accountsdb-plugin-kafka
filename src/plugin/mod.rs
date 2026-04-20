@@ -17,8 +17,8 @@ mod mapping;
 
 use {
     crate::{
-        confirmation_buffer::{ConfirmedAccounts, InternalSlotStatus},
         config::Config,
+        confirmation_buffer::{ConfirmedAccounts, InternalSlotStatus},
         initial_account_backfill::InitialAccountBackfill,
         metrics::StatsThreadedProducerContext,
         publisher::Publisher,
@@ -30,8 +30,8 @@ use {
         Result as PluginResult, SlotStatus as PluginSlotStatus,
     },
     log::{error, info},
-    rdkafka::{ClientConfig, config::FromClientConfigAndContext},
     rdkafka::util::get_rdkafka_version,
+    rdkafka::{ClientConfig, config::FromClientConfigAndContext},
     std::{
         fmt::{Debug, Formatter},
         sync::{Arc, Mutex, MutexGuard},
