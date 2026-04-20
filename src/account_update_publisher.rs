@@ -29,10 +29,11 @@ pub fn publish_confirmed_account_update(
     let decision = should_publish_confirmed_account(subs, &event);
     match decision {
         AccountUpdatePublishOutcome::Published => {
-            if let Ok(pubkey) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
+            let pubkey = <[u8; 32]>::try_from(event.pubkey.as_slice()).ok();
+            publish_raw_account_update(publisher, topic, event)?;
+            if let Some(pubkey) = pubkey {
                 backfill_handle.mark_live_update_seen(&pubkey);
             }
-            publish_raw_account_update(publisher, topic, event)?;
             Ok(AccountUpdatePublishOutcome::Published)
         }
         AccountUpdatePublishOutcome::SkippedUnsubscribed => {
