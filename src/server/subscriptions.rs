@@ -71,7 +71,8 @@ impl AccountSubscriptions {
         }
     }
 
-    /// Clear keys from the needs_backfill set (enqueue succeeded).
+    #[cfg(test)]
+    /// Clear keys from the needs_backfill set.
     pub fn clear_needs_backfill(&self, pubkeys: &[[u8; 32]]) {
         for pk in pubkeys {
             self.needs_backfill.remove(pk);
@@ -90,6 +91,7 @@ impl AccountSubscriptions {
         keys
     }
 
+    #[cfg(test)]
     pub fn needs_backfill_count(&self) -> usize {
         self.needs_backfill.len()
     }
