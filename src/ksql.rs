@@ -3,7 +3,7 @@ use {
     log::debug,
     reqwest::{Url, blocking::Client, header::CONTENT_TYPE},
     serde_json::Value,
-    std::io,
+    std::io::{self, BufRead, BufReader},
 };
 
 pub(crate) const INIT_TRACKING_KSQL_TABLE: &str = "accounts";
@@ -49,11 +49,8 @@ impl KsqlPubkeyRestoreClient {
             .error_for_status()
             .map_err(|error| io::Error::other(format!("ksqlDB query failed: {error}")))?;
 
-        let body = response
-            .text()
-            .map_err(|error| io::Error::other(format!("failed to read ksqlDB body: {error}")))?;
-
-        let pubkeys = parse_pubkeys_response(&body)?;
+        let reader = BufReader::new(response);
+        let pubkeys = parse_pubkeys_stream(reader)?;
         debug!(
             "Parsed ksql startup restore response, found_pubkeys={}",
             pubkeys.len()
@@ -62,10 +59,15 @@ impl KsqlPubkeyRestoreClient {
     }
 }
 
-pub(crate) fn parse_pubkeys_response(body: &str) -> io::Result<Vec<[u8; 32]>> {
+pub(crate) fn parse_pubkeys_stream(reader: impl BufRead) -> io::Result<Vec<[u8; 32]>> {
     let mut pubkeys = Vec::new();
 
-    for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line_result in reader.lines() {
+        let line = line_result?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
         let value: Value = serde_json::from_str(line).map_err(|error| {
             io::Error::other(format!("invalid ksql response line `{line}`: {error}"))
         })?;
@@ -126,7 +128,7 @@ pub(crate) fn parse_pubkeys_response(body: &str) -> io::Result<Vec<[u8; 32]>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_pubkeys_response;
+    use super::parse_pubkeys_stream;
 
     fn pubkey(byte: u8) -> [u8; 32] {
         [byte; 32]
@@ -139,7 +141,7 @@ mod tests {
             "[\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\"]\n"
         );
 
-        let parsed = parse_pubkeys_response(body).unwrap();
+        let parsed = parse_pubkeys_stream(body.as_bytes()).unwrap();
 
         assert_eq!(parsed, vec![pubkey(1)]);
     }
@@ -151,14 +153,14 @@ mod tests {
             "[\"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=\"]\n"
         );
 
-        let parsed = parse_pubkeys_response(body).unwrap();
+        let parsed = parse_pubkeys_stream(body.as_bytes()).unwrap();
 
         assert_eq!(parsed, vec![pubkey(1), pubkey(2)]);
     }
 
     #[test]
     fn rejects_ksql_error_rows() {
-        let error = parse_pubkeys_response("{\"@type\":\"error\",\"message\":\"boom\"}\n")
+        let error = parse_pubkeys_stream("{\"@type\":\"error\",\"message\":\"boom\"}\n".as_bytes())
             .unwrap_err()
             .to_string();
 
@@ -167,7 +169,7 @@ mod tests {
 
     #[test]
     fn rejects_non_array_data_rows() {
-        let error = parse_pubkeys_response("\"nope\"\n")
+        let error = parse_pubkeys_stream("\"nope\"\n".as_bytes())
             .unwrap_err()
             .to_string();
 
@@ -176,7 +178,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_column_count() {
-        let error = parse_pubkeys_response("[\"a\",\"b\"]\n")
+        let error = parse_pubkeys_stream("[\"a\",\"b\"]\n".as_bytes())
             .unwrap_err()
             .to_string();
 
@@ -185,7 +187,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_base64() {
-        let error = parse_pubkeys_response("[\"not-base64\"]\n")
+        let error = parse_pubkeys_stream("[\"not-base64\"]\n".as_bytes())
             .unwrap_err()
             .to_string();
 
@@ -194,7 +196,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_pubkey_length() {
-        let error = parse_pubkeys_response("[\"AQ==\"]\n")
+        let error = parse_pubkeys_stream("[\"AQ==\"]\n".as_bytes())
             .unwrap_err()
             .to_string();
 
