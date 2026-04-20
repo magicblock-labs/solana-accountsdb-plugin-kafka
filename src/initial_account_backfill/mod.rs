@@ -73,6 +73,10 @@ impl InitialAccountBackfill {
         self.handle.clone()
     }
 
+    pub fn handle_ref(&self) -> &InitialAccountBackfillHandle {
+        &self.handle
+    }
+
     fn new_disabled() -> Self {
         let (tx, _rx) = mpsc::channel(1);
         let inner = Arc::new(InitialAccountBackfillInner {

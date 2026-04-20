@@ -166,7 +166,7 @@ impl GeyserPlugin for KafkaPlugin {
             self.unwrap_publisher(),
             self.update_account_topic(),
             &self.account_subscriptions,
-            &self.initial_account_backfill.handle(),
+            self.initial_account_backfill.handle_ref(),
             transition.confirmed_updates,
         )
     }
