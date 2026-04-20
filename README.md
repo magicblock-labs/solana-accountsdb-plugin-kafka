@@ -75,7 +75,7 @@ Supported fields:
 
 - `libpath`: path to the plugin shared library
 - `kafka`: `librdkafka` producer configuration, plus optional `bootstrap.ksql` for startup whitelist restore
-    - `kafka.ksql`: optional ksqlDB base URL; when set, startup restores tracked pubkeys from `accounts` and fails fast if restore cannot complete
+    - `bootstrap.ksql`: optional ksqlDB base URL; when set, startup restores tracked pubkeys from `accounts` and fails fast if restore cannot complete
 - `shutdown_timeout_ms`: producer flush timeout on shutdown
 - `update_account_topic`: Kafka topic for wrapped account updates
 - `local_rpc_url`: local validator RPC endpoint used for initial account backfill
