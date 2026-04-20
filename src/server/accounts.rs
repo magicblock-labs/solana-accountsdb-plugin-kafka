@@ -27,6 +27,7 @@ struct AccountsResponse {
     newly_added_count: usize,
     retried_backfill_count: usize,
     duplicate_count: usize,
+    needs_backfill_count: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -193,6 +194,7 @@ impl From<AddAccountsOutcome> for AccountsResponse {
             newly_added_count: outcome.newly_added_count,
             retried_backfill_count: outcome.retried_backfill_count,
             duplicate_count: outcome.duplicate_count,
+            needs_backfill_count: outcome.needs_backfill_count,
         }
     }
 }
