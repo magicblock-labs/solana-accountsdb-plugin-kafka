@@ -189,6 +189,21 @@ impl InitialAccountBackfillHandle {
         }
         INITIAL_BACKFILL_IN_FLIGHT.set(self.inner.in_flight.len() as i64);
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_test(channel_capacity: usize) -> Self {
+        let (inner, rx) = tests::test_inner(channel_capacity);
+        std::mem::forget(rx);
+        Self { inner }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prefill_queue_for_test(&self, pubkeys: Vec<[u8; 32]>) {
+        self.inner
+            .tx
+            .try_send(BackfillRequest { pubkeys })
+            .expect("failed to prefill test backfill queue");
+    }
 }
 
 pub struct EnqueueResult {
@@ -329,7 +344,7 @@ mod tests {
         [byte; 32]
     }
 
-    fn test_inner(
+    pub(super) fn test_inner(
         channel_capacity: usize,
     ) -> (
         Arc<InitialAccountBackfillInner>,

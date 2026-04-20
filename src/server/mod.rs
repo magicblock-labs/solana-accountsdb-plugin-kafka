@@ -1,4 +1,4 @@
-mod accounts;
+pub(crate) mod accounts;
 pub mod prom;
 pub mod subscriptions;
 
