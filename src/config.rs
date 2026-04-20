@@ -51,6 +51,14 @@ pub struct Config {
     /// Optional ksqlDB base URL used to restore tracked pubkeys during startup.
     #[serde(default)]
     pub init_tracking_from_ksql_url: Option<String>,
+
+    /// ksqlDB table name used for startup restore (default: "accounts").
+    #[serde(default = "default_ksql_table")]
+    pub init_tracking_from_ksql_table: String,
+}
+
+fn default_ksql_table() -> String {
+    "accounts".to_owned()
 }
 
 impl Default for Config {
@@ -64,6 +72,7 @@ impl Default for Config {
             admin: SocketAddr::from(([127, 0, 0, 1], 0)),
             metrics: false,
             init_tracking_from_ksql_url: None,
+            init_tracking_from_ksql_table: default_ksql_table(),
         }
     }
 }

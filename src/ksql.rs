@@ -6,16 +6,16 @@ use {
     std::io::{self, BufRead, BufReader},
 };
 
-pub(crate) const INIT_TRACKING_KSQL_TABLE: &str = "accounts";
 pub(crate) const INIT_TRACKING_RESTORE_CHUNK_SIZE: usize = 256;
 
 pub(crate) struct KsqlPubkeyRestoreClient {
     client: Client,
     base_url: String,
+    table: String,
 }
 
 impl KsqlPubkeyRestoreClient {
-    pub(crate) fn new(base_url: &str) -> io::Result<Self> {
+    pub(crate) fn new(base_url: &str, table: &str) -> io::Result<Self> {
         let parsed = Url::parse(base_url)
             .map_err(|error| io::Error::other(format!("invalid ksql base URL: {error}")))?;
         let normalized = parsed.as_str().trim_end_matches('/').to_owned();
@@ -26,11 +26,12 @@ impl KsqlPubkeyRestoreClient {
         Ok(Self {
             client,
             base_url: normalized,
+            table: table.to_owned(),
         })
     }
 
     pub(crate) fn fetch_pubkeys(&self) -> io::Result<Vec<[u8; 32]>> {
-        let sql = format!("SELECT PUBKEY FROM {};", INIT_TRACKING_KSQL_TABLE);
+        let sql = format!("SELECT \"PUBKEY\" FROM \"{}\";", self.table);
         let query_url = format!("{}/query-stream", self.base_url);
         debug!(
             "Querying ksql for startup restore, url={}, sql={}",

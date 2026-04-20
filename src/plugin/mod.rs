@@ -20,9 +20,7 @@ use {
         config::Config,
         confirmation_buffer::{ConfirmedAccounts, InternalSlotStatus},
         initial_account_backfill::InitialAccountBackfill,
-        ksql::{
-            INIT_TRACKING_KSQL_TABLE, INIT_TRACKING_RESTORE_CHUNK_SIZE, KsqlPubkeyRestoreClient,
-        },
+        ksql::{INIT_TRACKING_RESTORE_CHUNK_SIZE, KsqlPubkeyRestoreClient},
         metrics::StatsThreadedProducerContext,
         publisher::Publisher,
         server::subscriptions::AccountSubscriptions,
@@ -223,12 +221,10 @@ impl KafkaPlugin {
             return Ok(());
         };
 
-        info!(
-            "Startup ksql restore enabled, url={}, table={}",
-            url, INIT_TRACKING_KSQL_TABLE
-        );
+        let table = &config.init_tracking_from_ksql_table;
+        info!("Startup ksql restore enabled, url={}, table={}", url, table);
 
-        let client = KsqlPubkeyRestoreClient::new(url)
+        let client = KsqlPubkeyRestoreClient::new(url, table)
             .map_err(|error| PluginError::Custom(Box::new(error)))?;
         let mut pubkeys = client
             .fetch_pubkeys()
