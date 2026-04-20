@@ -320,9 +320,14 @@ fn add_accounts_error_to_plugin_error(error: AddAccountsError) -> PluginError {
                 outcome.duplicate_count,
                 outcome.needs_backfill_count
             );
-            PluginError::Custom(Box::new(std::io::Error::other(
-                "startup ksql restore failed: initial backfill queue full",
-            )))
+            PluginError::Custom(Box::new(std::io::Error::other(format!(
+                "startup ksql restore failed: initial backfill queue full, accepted_count={}, newly_added_count={}, retried_backfill_count={}, duplicate_count={}, needs_backfill_count={}",
+                outcome.accepted_count,
+                outcome.newly_added_count,
+                outcome.retried_backfill_count,
+                outcome.duplicate_count,
+                outcome.needs_backfill_count
+            ))))
         }
         AddAccountsError::BackfillUnavailable(outcome) => {
             error!(
@@ -333,9 +338,14 @@ fn add_accounts_error_to_plugin_error(error: AddAccountsError) -> PluginError {
                 outcome.duplicate_count,
                 outcome.needs_backfill_count
             );
-            PluginError::Custom(Box::new(std::io::Error::other(
-                "startup ksql restore failed: initial backfill unavailable",
-            )))
+            PluginError::Custom(Box::new(std::io::Error::other(format!(
+                "startup ksql restore failed: initial backfill unavailable, accepted_count={}, newly_added_count={}, retried_backfill_count={}, duplicate_count={}, needs_backfill_count={}",
+                outcome.accepted_count,
+                outcome.newly_added_count,
+                outcome.retried_backfill_count,
+                outcome.duplicate_count,
+                outcome.needs_backfill_count
+            ))))
         }
     }
 }
