@@ -18,6 +18,7 @@ mod account_update_publisher;
 mod config;
 mod confirmation_buffer;
 mod initial_account_backfill;
+mod ksql;
 mod metrics;
 mod plugin;
 mod publisher;
