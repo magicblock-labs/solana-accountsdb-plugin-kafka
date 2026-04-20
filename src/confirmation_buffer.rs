@@ -1,5 +1,5 @@
 use {
-    crate::UpdateAccountEvent,
+    crate::wire::UpdateAccountEvent,
     agave_geyser_plugin_interface::geyser_plugin_interface::SlotStatus as PluginSlotStatus,
     log::{debug, error, warn},
     solana_pubkey::Pubkey,

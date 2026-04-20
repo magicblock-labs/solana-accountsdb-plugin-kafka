@@ -12,22 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod dispatch;
+mod mapping;
+
 use {
     crate::{
-        HttpService, InternalSlotStatus, Publisher, UpdateAccountEvent,
-        account_update_publisher::publish_account_update,
+        config::Config,
+        confirmation_buffer::{ConfirmedAccounts, InternalSlotStatus},
+        initial_account_backfill::InitialAccountBackfill,
+        metrics::StatsThreadedProducerContext,
+        publisher::Publisher,
+        server::HttpService,
         server::subscriptions::AccountSubscriptions,
-        {Config, ConfirmedAccounts, InitialAccountBackfill},
     },
     agave_geyser_plugin_interface::geyser_plugin_interface::{
-        GeyserPlugin, GeyserPluginError as PluginError, ReplicaAccountInfoV3,
-        ReplicaAccountInfoVersions, Result as PluginResult, SlotStatus as PluginSlotStatus,
+        GeyserPlugin, GeyserPluginError as PluginError, ReplicaAccountInfoVersions,
+        Result as PluginResult, SlotStatus as PluginSlotStatus,
     },
     log::{error, info},
     rdkafka::util::get_rdkafka_version,
+    rdkafka::{ClientConfig, config::FromClientConfigAndContext},
     std::{
         fmt::{Debug, Formatter},
         sync::{Arc, Mutex, MutexGuard},
+        time::Duration,
     },
 };
 
@@ -80,11 +88,22 @@ impl GeyserPlugin for KafkaPlugin {
         let (version_n, version_s) = get_rdkafka_version();
         info!("rd_kafka_version: {:#08x}, {}", version_n, version_s);
 
-        let producer = config.producer().map_err(|error| {
+        let mut producer_config = ClientConfig::new();
+        for (key, value) in &config.kafka {
+            producer_config.set(key, value);
+        }
+        let producer = rdkafka::producer::ThreadedProducer::from_config_and_context(
+            &producer_config,
+            StatsThreadedProducerContext,
+        )
+        .map_err(|error| {
             error!("Failed to create kafka producer: {error:?}");
             PluginError::Custom(Box::new(error))
         })?;
-        let publisher = Arc::new(Publisher::new(producer, &config));
+        let publisher = Arc::new(Publisher::new(
+            producer,
+            Duration::from_millis(config.shutdown_timeout_ms),
+        ));
         let update_account_topic = Arc::new(config.update_account_topic.clone());
         let initial_account_backfill = InitialAccountBackfill::new(
             publisher.clone(),
@@ -93,12 +112,13 @@ impl GeyserPlugin for KafkaPlugin {
             config.local_rpc_url.clone(),
         )
         .map_err(|error| PluginError::Custom(Box::new(error)))?;
-        let http_service = config
-            .create_http_service(
-                self.account_subscriptions.clone(),
-                initial_account_backfill.handle(),
-            )
-            .map_err(|error| PluginError::Custom(Box::new(error)))?;
+        let http_service = HttpService::new(
+            config.admin,
+            self.account_subscriptions.clone(),
+            initial_account_backfill.handle(),
+            config.metrics,
+        )
+        .map_err(|error| PluginError::Custom(Box::new(error)))?;
 
         self.publisher = Some(publisher);
         self.update_account_topic = Some(update_account_topic);
@@ -124,8 +144,8 @@ impl GeyserPlugin for KafkaPlugin {
         slot: u64,
         is_startup: bool,
     ) -> PluginResult<()> {
-        let info = Self::unwrap_update_account(account);
-        let event = Self::build_update_account_event(info, slot, is_startup);
+        let info = mapping::unwrap_update_account(account);
+        let event = mapping::build_update_account_event(info, slot, is_startup);
         self.lock_confirmed_accounts()?.record_account(event);
         Ok(())
     }
@@ -142,7 +162,13 @@ impl GeyserPlugin for KafkaPlugin {
             InternalSlotStatus::from(status.clone()),
         );
 
-        self.publish_confirmed_account_updates(transition.confirmed_updates)
+        dispatch::publish_confirmed_account_updates(
+            self.unwrap_publisher(),
+            self.update_account_topic(),
+            &self.account_subscriptions,
+            self.initial_account_backfill.handle_ref(),
+            transition.confirmed_updates,
+        )
     }
 
     fn account_data_notifications_enabled(&self) -> bool {
@@ -175,116 +201,5 @@ impl KafkaPlugin {
         self.update_account_topic
             .as_deref()
             .expect("update_account_topic is unavailable")
-    }
-
-    fn unwrap_update_account(account: ReplicaAccountInfoVersions<'_>) -> &ReplicaAccountInfoV3<'_> {
-        match account {
-            ReplicaAccountInfoVersions::V0_0_1(_info) => {
-                panic!(
-                    "ReplicaAccountInfoVersions::V0_0_1 unsupported, please upgrade your Solana node."
-                );
-            }
-            ReplicaAccountInfoVersions::V0_0_2(_info) => {
-                panic!(
-                    "ReplicaAccountInfoVersions::V0_0_2 unsupported, please upgrade your Solana node."
-                );
-            }
-            ReplicaAccountInfoVersions::V0_0_3(info) => info,
-        }
-    }
-
-    fn build_update_account_event(
-        info: &ReplicaAccountInfoV3<'_>,
-        slot: u64,
-        is_startup: bool,
-    ) -> UpdateAccountEvent {
-        UpdateAccountEvent {
-            slot,
-            pubkey: info.pubkey.to_vec(),
-            lamports: info.lamports,
-            owner: info.owner.to_vec(),
-            executable: info.executable,
-            rent_epoch: info.rent_epoch,
-            data: info.data.to_vec(),
-            write_version: info.write_version,
-            txn_signature: info.txn.map(|v| v.signature().as_ref().to_owned()),
-            data_version: info.write_version as u32,
-            is_startup,
-            account_age: slot.saturating_sub(info.rent_epoch),
-        }
-    }
-
-    fn publish_confirmed_account_updates(
-        &self,
-        updates: Vec<UpdateAccountEvent>,
-    ) -> PluginResult<()> {
-        if updates.is_empty() {
-            return Ok(());
-        }
-
-        let publisher = self.unwrap_publisher();
-        let topic = self.update_account_topic();
-        let mut first_error = None;
-
-        for event in updates {
-            if !Self::should_publish_confirmed_update(&event) {
-                continue;
-            }
-
-            if let Ok(pubkey) = <[u8; 32]>::try_from(event.pubkey.as_slice()) {
-                self.initial_account_backfill
-                    .handle()
-                    .mark_live_update_seen(&pubkey);
-            }
-            if let Err(error) =
-                publish_account_update(publisher, topic, &self.account_subscriptions, event)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-        }
-
-        first_error.map_or(Ok(()), Err)
-    }
-
-    fn should_publish_confirmed_update(event: &UpdateAccountEvent) -> bool {
-        !event.is_startup
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::KafkaPlugin;
-    use crate::UpdateAccountEvent;
-
-    fn sample_event(is_startup: bool) -> UpdateAccountEvent {
-        UpdateAccountEvent {
-            slot: 42,
-            pubkey: vec![1; 32],
-            lamports: 5,
-            owner: vec![2; 32],
-            executable: false,
-            rent_epoch: 0,
-            data: vec![],
-            write_version: 7,
-            txn_signature: None,
-            data_version: 7,
-            is_startup,
-            account_age: 0,
-        }
-    }
-
-    #[test]
-    fn startup_replay_updates_are_not_published_from_confirmed_buffer() {
-        assert!(!KafkaPlugin::should_publish_confirmed_update(
-            &sample_event(true)
-        ));
-    }
-
-    #[test]
-    fn live_updates_are_published_from_confirmed_buffer() {
-        assert!(KafkaPlugin::should_publish_confirmed_update(&sample_event(
-            false
-        )));
     }
 }

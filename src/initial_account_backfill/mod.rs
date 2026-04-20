@@ -1,26 +1,28 @@
 use {
     crate::{
-        AccountSubscriptions, Publisher, UpdateAccountEvent,
-        account_update_publisher::publish_account_update,
-        server::prom::{
+        account_update_publisher::{AccountUpdatePublishOutcome, publish_backfill_account_update},
+        metrics::{
             INITIAL_BACKFILL_IN_FLIGHT, INITIAL_BACKFILL_PUBKEYS_ENQUEUED_TOTAL,
-            INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL, INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL,
-            INITIAL_BACKFILL_RPC_FAILURES_TOTAL, INITIAL_BACKFILL_SNAPSHOTS_TOTAL,
+            INITIAL_BACKFILL_REQUESTS_ENQUEUED_TOTAL, INITIAL_BACKFILL_RPC_FAILURES_TOTAL,
+            INITIAL_BACKFILL_SNAPSHOTS_TOTAL,
         },
+        publisher::Publisher,
+        server::subscriptions::AccountSubscriptions,
+        wire::UpdateAccountEvent,
     },
     dashmap::DashMap,
     log::*,
-    solana_account::Account,
     solana_commitment_config::CommitmentConfig,
-    solana_pubkey::{Pubkey, pubkey},
+    solana_pubkey::Pubkey,
     solana_rpc_client::nonblocking::rpc_client::RpcClient,
-    std::{io, sync::Arc, time::Duration},
+    std::{io, sync::Arc},
     tokio::{
         runtime::Runtime,
         sync::mpsc::{self, error::TrySendError},
-        time::sleep,
     },
 };
+
+mod rpc;
 
 pub const INITIAL_BACKFILL_QUEUE_CAPACITY: usize = 1024;
 pub const INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST: usize = 100;
@@ -56,47 +58,8 @@ impl InitialAccountBackfill {
 
         runtime.spawn(async move {
             while let Some(request) = rx.recv().await {
-                match inner
-                    .fetch_account_events_for_request(&request.pubkeys)
-                    .await
-                {
-                    Ok(events) => {
-                        info!(
-                            "Initial account backfill RPC request succeeded for {} pubkeys",
-                            request.pubkeys.len()
-                        );
-                        debug!(
-                            "Fetched {} initial account backfill snapshots for {} pubkeys",
-                            events.len(),
-                            request.pubkeys.len()
-                        );
-
-                        for event in events {
-                            if let Err(error) = inner.complete_backfill_event(event) {
-                                INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-                                    .with_label_values(&["publish_failed"])
-                                    .inc();
-                                error!(
-                                    "Failed to publish initial account backfill snapshot: {error:?}"
-                                );
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        INITIAL_BACKFILL_RPC_FAILURES_TOTAL
-                            .with_label_values(&["request_failed"])
-                            .inc();
-                        error!(
-                            "Initial account backfill RPC fetch failed for {} pubkeys: {error}",
-                            request.pubkeys.len()
-                        );
-                    }
-                }
-
-                for pubkey in request.pubkeys {
-                    inner.in_flight.remove(&pubkey);
-                }
-                INITIAL_BACKFILL_IN_FLIGHT.set(inner.in_flight.len() as i64);
+                inner.process_request(&request.pubkeys).await;
+                inner.clear_in_flight(&request.pubkeys);
             }
         });
 
@@ -108,6 +71,10 @@ impl InitialAccountBackfill {
 
     pub fn handle(&self) -> InitialAccountBackfillHandle {
         self.handle.clone()
+    }
+
+    pub fn handle_ref(&self) -> &InitialAccountBackfillHandle {
+        &self.handle
     }
 
     fn new_disabled() -> Self {
@@ -248,6 +215,50 @@ struct InitialAccountBackfillInner {
 }
 
 impl InitialAccountBackfillInner {
+    async fn process_request(&self, pubkeys: &[[u8; 32]]) {
+        match rpc::fetch_account_events_for_request(&self.client, pubkeys).await {
+            Ok(events) => {
+                info!(
+                    "Initial account backfill RPC request succeeded for {} pubkeys",
+                    pubkeys.len()
+                );
+                debug!(
+                    "Fetched {} initial account backfill snapshots for {} pubkeys",
+                    events.len(),
+                    pubkeys.len()
+                );
+                self.publish_events(events);
+            }
+            Err(error) => {
+                INITIAL_BACKFILL_RPC_FAILURES_TOTAL
+                    .with_label_values(&["request_failed"])
+                    .inc();
+                error!(
+                    "Initial account backfill RPC fetch failed for {} pubkeys: {error}",
+                    pubkeys.len()
+                );
+            }
+        }
+    }
+
+    fn publish_events(&self, events: Vec<UpdateAccountEvent>) {
+        for event in events {
+            if let Err(error) = self.complete_backfill_event(event) {
+                INITIAL_BACKFILL_SNAPSHOTS_TOTAL
+                    .with_label_values(&["publish_failed"])
+                    .inc();
+                error!("Failed to publish initial account backfill snapshot: {error:?}");
+            }
+        }
+    }
+
+    fn clear_in_flight(&self, pubkeys: &[[u8; 32]]) {
+        for pubkey in pubkeys {
+            self.in_flight.remove(pubkey);
+        }
+        INITIAL_BACKFILL_IN_FLIGHT.set(self.in_flight.len() as i64);
+    }
+
     fn complete_backfill_event(
         &self,
         event: UpdateAccountEvent,
@@ -266,197 +277,53 @@ impl InitialAccountBackfillInner {
         let Some((_, in_flight)) = self.in_flight.remove(&pubkey) else {
             return Ok(());
         };
-        INITIAL_BACKFILL_IN_FLIGHT.set(self.in_flight.len() as i64);
-
-        if in_flight.live_seen {
-            INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-                .with_label_values(&["suppressed_live_seen"])
-                .inc();
-            info!(
-                "Suppressing initial account backfill snapshot for {} because a live update arrived first",
-                Pubkey::new_from_array(pubkey)
-            );
-            return Ok(());
-        }
-
-        if !self.subscriptions.contains_sync(&pubkey) {
-            INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-                .with_label_values(&["skipped_unsubscribed"])
-                .inc();
-            debug!(
-                "Skipping initial account backfill snapshot for unsubscribed pubkey {}",
-                Pubkey::new_from_array(pubkey)
-            );
-            return Ok(());
-        }
+        Self::record_in_flight_gauge(self.in_flight.len());
 
         let Some(publisher) = self.publisher.as_deref() else {
-            INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-                .with_label_values(&["skipped_no_publisher"])
-                .inc();
+            Self::record_snapshot("skipped_no_publisher");
             return Ok(());
         };
 
-        let result = publish_account_update(
+        let outcome = publish_backfill_account_update(
             publisher,
             self.update_account_topic.as_str(),
             &self.subscriptions,
+            pubkey,
+            in_flight.live_seen,
             event,
-        );
-        INITIAL_BACKFILL_SNAPSHOTS_TOTAL
-            .with_label_values(&[if result.is_ok() {
-                "published"
-            } else {
-                "publish_failed"
-            }])
-            .inc();
-        if result.is_ok() {
+        )?;
+        Self::record_snapshot(match outcome {
+            AccountUpdatePublishOutcome::Published => "published",
+            AccountUpdatePublishOutcome::SkippedStartupReplay => "skipped_startup_replay",
+            AccountUpdatePublishOutcome::SkippedUnsubscribed => "skipped_unsubscribed",
+            AccountUpdatePublishOutcome::SkippedLiveUpdateWon => "suppressed_live_seen",
+        });
+        if matches!(outcome, AccountUpdatePublishOutcome::Published) {
             info!(
                 "Published initial account backfill snapshot for {}",
                 Pubkey::new_from_array(pubkey)
             );
         }
-        result
+        Ok(())
     }
 
-    async fn fetch_account_events_for_request(
-        &self,
-        pubkeys: &[[u8; 32]],
-    ) -> io::Result<Vec<UpdateAccountEvent>> {
-        let mut events = Vec::with_capacity(pubkeys.len());
-        for chunk in pubkeys.chunks(INITIAL_BACKFILL_MAX_RPC_KEYS_PER_REQUEST) {
-            events.extend(self.fetch_account_events_for_chunk(chunk).await?);
-        }
-        Ok(events)
+    fn record_snapshot(label: &str) {
+        INITIAL_BACKFILL_SNAPSHOTS_TOTAL
+            .with_label_values(&[label])
+            .inc();
     }
 
-    async fn fetch_account_events_for_chunk(
-        &self,
-        pubkeys: &[[u8; 32]],
-    ) -> io::Result<Vec<UpdateAccountEvent>> {
-        let keys = pubkeys
-            .iter()
-            .map(|pubkey| Pubkey::new_from_array(*pubkey))
-            .collect::<Vec<_>>();
-
-        let mut backoff_ms = INITIAL_BACKFILL_INITIAL_BACKOFF_MS;
-        let mut last_error = None;
-
-        for attempt in 1..=INITIAL_BACKFILL_MAX_ATTEMPTS {
-            INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL
-                .with_label_values(&["started"])
-                .inc();
-            info!(
-                "Starting initial account backfill RPC request for {} pubkeys, attempt={}/{}",
-                pubkeys.len(),
-                attempt,
-                INITIAL_BACKFILL_MAX_ATTEMPTS
-            );
-
-            match self
-                .client
-                .get_multiple_accounts_with_commitment(&keys, CommitmentConfig::confirmed())
-                .await
-            {
-                Ok(response) => {
-                    info!(
-                        "Initial account backfill RPC request succeeded for {} pubkeys at slot {}",
-                        pubkeys.len(),
-                        response.context.slot
-                    );
-
-                    if response.value.len() != pubkeys.len() {
-                        INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL
-                            .with_label_values(&["failed"])
-                            .inc();
-                        INITIAL_BACKFILL_RPC_FAILURES_TOTAL
-                            .with_label_values(&["length_mismatch"])
-                            .inc();
-                        return Err(io::Error::other(format!(
-                            "rpc returned {} accounts for {} requested pubkeys",
-                            response.value.len(),
-                            pubkeys.len()
-                        )));
-                    }
-
-                    INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL
-                        .with_label_values(&["succeeded"])
-                        .inc();
-                    return Ok(pubkeys
-                        .iter()
-                        .zip(response.value.into_iter())
-                        .map(|(pubkey, maybe_account)| match maybe_account {
-                            Some(account) => {
-                                map_existing_account(account, response.context.slot, *pubkey)
-                            }
-                            None => map_missing_account(response.context.slot, *pubkey),
-                        })
-                        .collect());
-                }
-                Err(error) => {
-                    INITIAL_BACKFILL_RPC_ATTEMPTS_TOTAL
-                        .with_label_values(&["failed"])
-                        .inc();
-                    warn!(
-                        "Initial account backfill RPC request failed for {} pubkeys, \
-                         attempt={}/{}: {error}",
-                        pubkeys.len(),
-                        attempt,
-                        INITIAL_BACKFILL_MAX_ATTEMPTS
-                    );
-                    last_error = Some(error);
-
-                    if attempt < INITIAL_BACKFILL_MAX_ATTEMPTS {
-                        sleep(Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = (backoff_ms * 2).min(INITIAL_BACKFILL_MAX_BACKOFF_MS);
-                    }
-                }
-            }
-        }
-
-        Err(io::Error::other(last_error.unwrap()))
-    }
-}
-
-const SYSTEM_PROGRAM_ID: Pubkey = pubkey!("11111111111111111111111111111111");
-
-fn map_existing_account(account: Account, slot: u64, pubkey: [u8; 32]) -> UpdateAccountEvent {
-    UpdateAccountEvent {
-        slot,
-        pubkey: pubkey.to_vec(),
-        lamports: account.lamports,
-        owner: account.owner.to_bytes().to_vec(),
-        executable: account.executable,
-        rent_epoch: account.rent_epoch,
-        data: account.data,
-        write_version: 0,
-        txn_signature: None,
-        data_version: 0,
-        is_startup: false,
-        account_age: 0,
-    }
-}
-
-fn map_missing_account(slot: u64, pubkey: [u8; 32]) -> UpdateAccountEvent {
-    UpdateAccountEvent {
-        slot,
-        pubkey: pubkey.to_vec(),
-        lamports: 0,
-        owner: SYSTEM_PROGRAM_ID.to_bytes().to_vec(),
-        executable: false,
-        rent_epoch: 0,
-        data: Vec::new(),
-        write_version: 0,
-        txn_signature: None,
-        data_version: 0,
-        is_startup: false,
-        account_age: 0,
+    fn record_in_flight_gauge(count: usize) {
+        INITIAL_BACKFILL_IN_FLIGHT.set(count as i64);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use {super::*, tokio::sync::mpsc};
+    use {
+        super::*, crate::server::subscriptions::AccountSubscriptions, solana_account::Account,
+        tokio::sync::mpsc,
+    };
 
     fn pk(byte: u8) -> [u8; 32] {
         [byte; 32]
@@ -487,7 +354,7 @@ mod tests {
 
     #[test]
     fn existing_account_maps_to_expected_update_event() {
-        let event = map_existing_account(
+        let event = rpc::map_existing_account(
             Account {
                 lamports: 42,
                 data: vec![1, 2, 3],
@@ -515,12 +382,12 @@ mod tests {
 
     #[test]
     fn missing_account_maps_to_sentinel_event() {
-        let event = map_missing_account(55, pk(2));
+        let event = rpc::map_missing_account(55, pk(2));
 
         assert_eq!(event.slot, 55);
         assert_eq!(event.pubkey, pk(2).to_vec());
         assert_eq!(event.lamports, 0);
-        assert_eq!(event.owner, SYSTEM_PROGRAM_ID.to_bytes().to_vec());
+        assert_eq!(event.owner, rpc::SYSTEM_PROGRAM_ID.to_bytes().to_vec());
         assert!(!event.executable);
         assert_eq!(event.rent_epoch, 0);
         assert!(event.data.is_empty());
@@ -573,7 +440,7 @@ mod tests {
         let _ = handle.enqueue(vec![pubkey]);
         handle.mark_live_update_seen(&pubkey);
 
-        let result = inner.complete_backfill_event(map_missing_account(1, pubkey));
+        let result = inner.complete_backfill_event(rpc::map_missing_account(1, pubkey));
 
         assert!(result.is_ok());
         assert!(!inner.in_flight.contains_key(&pubkey));

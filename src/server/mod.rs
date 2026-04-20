@@ -1,8 +1,9 @@
+mod accounts;
 pub mod prom;
 pub mod subscriptions;
 
 use {
-    crate::InitialAccountBackfillHandle,
+    crate::{initial_account_backfill::InitialAccountBackfillHandle, metrics::register_metrics},
     bytes::Bytes,
     http::StatusCode,
     http_body_util::Full,
@@ -29,7 +30,7 @@ impl HttpService {
         metrics_enabled: bool,
     ) -> IoResult<Self> {
         if metrics_enabled {
-            prom::register_metrics();
+            register_metrics();
         }
 
         let runtime = Runtime::new()?;
@@ -86,7 +87,7 @@ async fn route(
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/metrics") if metrics_enabled => metrics_handler(),
         (&Method::POST, "/filters/accounts") => {
-            subscriptions::handle_post_accounts(req, subs, initial_account_backfill).await
+            accounts::handle_post_accounts(req, subs, initial_account_backfill).await
         }
         _ => not_found(),
     }
