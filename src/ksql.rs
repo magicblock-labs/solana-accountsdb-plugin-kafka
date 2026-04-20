@@ -15,10 +15,8 @@ pub(crate) struct KsqlPubkeyRestoreClient {
 }
 
 impl KsqlPubkeyRestoreClient {
-    pub(crate) fn new(base_url: &str, table: &str) -> io::Result<Self> {
-        let parsed = Url::parse(base_url)
-            .map_err(|error| io::Error::other(format!("invalid ksql base URL: {error}")))?;
-        let normalized = parsed.as_str().trim_end_matches('/').to_owned();
+    pub(crate) fn new(base_url: &Url, table: &str) -> io::Result<Self> {
+        let normalized = base_url.as_str().trim_end_matches('/').to_owned();
         let client = Client::builder()
             .build()
             .map_err(|error| io::Error::other(format!("failed to build ksql client: {error}")))?;

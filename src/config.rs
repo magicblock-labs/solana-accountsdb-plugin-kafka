@@ -51,6 +51,10 @@ pub struct Config {
     /// ksqlDB table name used for startup restore (default: "accounts").
     #[serde(default = "default_ksql_table")]
     pub init_tracking_from_ksql_table: String,
+
+    /// Parsed and validated ksqlDB URL, populated during `validate()`.
+    #[serde(skip)]
+    init_tracking_from_ksql_url: Option<Url>,
 }
 
 fn default_ksql_table() -> String {
@@ -68,6 +72,7 @@ impl Default for Config {
             admin: SocketAddr::from(([127, 0, 0, 1], 0)),
             metrics: false,
             init_tracking_from_ksql_table: default_ksql_table(),
+            init_tracking_from_ksql_url: None,
         }
     }
 }
@@ -96,11 +101,11 @@ impl Config {
         self.set_default("partitioner", "murmur2_random");
     }
 
-    pub fn init_tracking_from_ksql_url(&self) -> Option<&str> {
-        self.kafka.get("bootstrap.ksql").map(String::as_str)
+    pub fn init_tracking_from_ksql_url(&self) -> Option<&Url> {
+        self.init_tracking_from_ksql_url.as_ref()
     }
 
-    fn validate(&self) -> PluginResult<()> {
+    fn validate(&mut self) -> PluginResult<()> {
         if self.update_account_topic.trim().is_empty() {
             return Err(GeyserPluginError::ConfigFileReadError {
                 msg: "missing required config field `update_account_topic`".to_owned(),
@@ -119,8 +124,8 @@ impl Config {
             });
         }
 
-        if let Some(url) = self.init_tracking_from_ksql_url() {
-            let trimmed = url.trim();
+        if let Some(raw) = self.kafka.get("bootstrap.ksql") {
+            let trimmed = raw.trim();
             if trimmed.is_empty() {
                 return Err(GeyserPluginError::ConfigFileReadError {
                     msg: "invalid config field `kafka.bootstrap.ksql`: URL must not be empty"
@@ -146,10 +151,11 @@ impl Config {
 
             if !parsed.has_host() {
                 return Err(GeyserPluginError::ConfigFileReadError {
-                    msg: "invalid config field `kafka.bootstrap.ksql`: host is required"
-                        .to_owned(),
+                    msg: "invalid config field `kafka.bootstrap.ksql`: host is required".to_owned(),
                 });
             }
+
+            self.init_tracking_from_ksql_url = Some(parsed);
         }
 
         Ok(())
@@ -158,7 +164,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use {super::Config, reqwest::Url};
 
     fn parse_config(json: &str) -> Result<Config, String> {
         let mut config: Config = serde_json::from_str(json).map_err(|error| error.to_string())?;
@@ -303,7 +309,7 @@ mod tests {
 
         assert_eq!(
             config.init_tracking_from_ksql_url(),
-            Some("https://127.0.0.1:8088")
+            Some(&Url::parse("https://127.0.0.1:8088").unwrap())
         );
     }
 
@@ -343,6 +349,53 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("relative URL without a base"));
+    }
+
+    /// Verifies that a config containing `bootstrap.ksql` does not poison the
+    /// rdkafka producer.  All entries in `config.kafka` are fed to a
+    /// `ClientConfig` the same way `plugin/mod.rs` does – if a non-librdkafka
+    /// key like `bootstrap.ksql` leaks in, `create()` will fail.
+    #[test]
+    fn kafka_entries_produce_valid_rdkafka_producer() {
+        let config = parse_config(
+            r#"{
+                "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
+                "kafka": {
+                    "bootstrap.servers": "localhost:9092",
+                    "bootstrap.ksql": "https://127.0.0.1:8088"
+                },
+                "update_account_topic": "solana.testnet.account_updates",
+                "local_rpc_url": "http://127.0.0.1:8899",
+                "admin": "127.0.0.1:8080"
+            }"#,
+        )
+        .unwrap();
+
+        // Confirm ksql URL is accessible through its dedicated accessor.
+        assert_eq!(
+            config.init_tracking_from_ksql_url(),
+            Some(&Url::parse("https://127.0.0.1:8088").unwrap())
+        );
+
+        // Build a producer exactly like plugin/mod.rs does – iterate over
+        // config.kafka and set each key/value.  `bootstrap.ksql` is NOT a
+        // valid librdkafka property; if it slips through, `create()` will
+        // return an error.
+        let mut client_config = rdkafka::ClientConfig::new();
+        for (key, value) in &config.kafka {
+            if key == "bootstrap.ksql" {
+                // This key is ours, not librdkafka's – skip it just like the
+                // plugin should.  The test asserts that the remaining entries
+                // are valid.
+                continue;
+            }
+            client_config.set(key, value);
+        }
+
+        let result: Result<rdkafka::producer::FutureProducer, _> = client_config.create();
+        if let Err(err) = result {
+            panic!("rdkafka producer creation failed: {err}");
+        }
     }
 
     #[test]
