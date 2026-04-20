@@ -48,10 +48,6 @@ pub struct Config {
     #[serde(default)]
     pub metrics: bool,
 
-    /// Optional ksqlDB base URL used to restore tracked pubkeys during startup.
-    #[serde(default)]
-    pub init_tracking_from_ksql_url: Option<String>,
-
     /// ksqlDB table name used for startup restore (default: "accounts").
     #[serde(default = "default_ksql_table")]
     pub init_tracking_from_ksql_table: String,
@@ -71,7 +67,6 @@ impl Default for Config {
             local_rpc_url: String::new(),
             admin: SocketAddr::from(([127, 0, 0, 1], 0)),
             metrics: false,
-            init_tracking_from_ksql_url: None,
             init_tracking_from_ksql_table: default_ksql_table(),
         }
     }
@@ -101,6 +96,10 @@ impl Config {
         self.set_default("partitioner", "murmur2_random");
     }
 
+    pub fn init_tracking_from_ksql_url(&self) -> Option<&str> {
+        self.kafka.get("bootstrap.ksql").map(String::as_str)
+    }
+
     fn validate(&self) -> PluginResult<()> {
         if self.update_account_topic.trim().is_empty() {
             return Err(GeyserPluginError::ConfigFileReadError {
@@ -120,19 +119,18 @@ impl Config {
             });
         }
 
-        if let Some(url) = &self.init_tracking_from_ksql_url {
+        if let Some(url) = self.init_tracking_from_ksql_url() {
             let trimmed = url.trim();
             if trimmed.is_empty() {
                 return Err(GeyserPluginError::ConfigFileReadError {
-                    msg:
-                        "invalid config field `init_tracking_from_ksql_url`: URL must not be empty"
-                            .to_owned(),
+                    msg: "invalid config field `kafka.bootstrap.ksql`: URL must not be empty"
+                        .to_owned(),
                 });
             }
 
             let parsed =
                 Url::parse(trimmed).map_err(|error| GeyserPluginError::ConfigFileReadError {
-                    msg: format!("invalid config field `init_tracking_from_ksql_url`: {error}"),
+                    msg: format!("invalid config field `kafka.bootstrap.ksql`: {error}"),
                 })?;
 
             match parsed.scheme() {
@@ -140,7 +138,7 @@ impl Config {
                 scheme => {
                     return Err(GeyserPluginError::ConfigFileReadError {
                         msg: format!(
-                            "invalid config field `init_tracking_from_ksql_url`: unsupported scheme `{scheme}`"
+                            "invalid config field `kafka.bootstrap.ksql`: unsupported scheme `{scheme}`"
                         ),
                     });
                 }
@@ -148,7 +146,7 @@ impl Config {
 
             if !parsed.has_host() {
                 return Err(GeyserPluginError::ConfigFileReadError {
-                    msg: "invalid config field `init_tracking_from_ksql_url`: host is required"
+                    msg: "invalid config field `kafka.bootstrap.ksql`: host is required"
                         .to_owned(),
                 });
             }
@@ -284,7 +282,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.init_tracking_from_ksql_url, None);
+        assert_eq!(config.init_tracking_from_ksql_url(), None);
     }
 
     #[test]
@@ -292,17 +290,19 @@ mod tests {
         let config = parse_config(
             r#"{
                 "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
-                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "kafka": {
+                    "bootstrap.servers": "localhost:9092",
+                    "bootstrap.ksql": "https://127.0.0.1:8088"
+                },
                 "update_account_topic": "solana.testnet.account_updates",
                 "local_rpc_url": "http://127.0.0.1:8899",
-                "admin": "127.0.0.1:8080",
-                "init_tracking_from_ksql_url": "https://127.0.0.1:8088"
+                "admin": "127.0.0.1:8080"
             }"#,
         )
         .unwrap();
 
         assert_eq!(
-            config.init_tracking_from_ksql_url.as_deref(),
+            config.init_tracking_from_ksql_url(),
             Some("https://127.0.0.1:8088")
         );
     }
@@ -312,11 +312,13 @@ mod tests {
         let error = parse_config(
             r#"{
                 "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
-                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "kafka": {
+                    "bootstrap.servers": "localhost:9092",
+                    "bootstrap.ksql": "   "
+                },
                 "update_account_topic": "solana.testnet.account_updates",
                 "local_rpc_url": "http://127.0.0.1:8899",
-                "admin": "127.0.0.1:8080",
-                "init_tracking_from_ksql_url": "   "
+                "admin": "127.0.0.1:8080"
             }"#,
         )
         .unwrap_err();
@@ -329,11 +331,13 @@ mod tests {
         let error = parse_config(
             r#"{
                 "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
-                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "kafka": {
+                    "bootstrap.servers": "localhost:9092",
+                    "bootstrap.ksql": "127.0.0.1:8088"
+                },
                 "update_account_topic": "solana.testnet.account_updates",
                 "local_rpc_url": "http://127.0.0.1:8899",
-                "admin": "127.0.0.1:8080",
-                "init_tracking_from_ksql_url": "127.0.0.1:8088"
+                "admin": "127.0.0.1:8080"
             }"#,
         )
         .unwrap_err();
@@ -346,11 +350,13 @@ mod tests {
         let error = parse_config(
             r#"{
                 "libpath": "target/release/libsolana_accountsdb_plugin_kafka.so",
-                "kafka": {"bootstrap.servers": "localhost:9092"},
+                "kafka": {
+                    "bootstrap.servers": "localhost:9092",
+                    "bootstrap.ksql": "http://:8088"
+                },
                 "update_account_topic": "solana.testnet.account_updates",
                 "local_rpc_url": "http://127.0.0.1:8899",
-                "admin": "127.0.0.1:8080",
-                "init_tracking_from_ksql_url": "http://:8088"
+                "admin": "127.0.0.1:8080"
             }"#,
         )
         .unwrap_err();

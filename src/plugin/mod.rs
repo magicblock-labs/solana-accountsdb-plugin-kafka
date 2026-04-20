@@ -217,7 +217,7 @@ impl KafkaPlugin {
         account_subscriptions: &AccountSubscriptions,
         initial_account_backfill: &InitialAccountBackfill,
     ) -> PluginResult<()> {
-        let Some(url) = config.init_tracking_from_ksql_url.as_deref() else {
+        let Some(url) = config.init_tracking_from_ksql_url() else {
             return Ok(());
         };
 
