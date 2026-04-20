@@ -191,10 +191,12 @@ impl InitialAccountBackfillHandle {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_test(channel_capacity: usize) -> Self {
+    pub(crate) fn new_test(channel_capacity: usize) -> TestBackfillHandle {
         let (inner, rx) = tests::test_inner(channel_capacity);
-        std::mem::forget(rx);
-        Self { inner }
+        TestBackfillHandle {
+            handle: Self { inner },
+            _rx: rx,
+        }
     }
 
     #[cfg(test)]
@@ -203,6 +205,20 @@ impl InitialAccountBackfillHandle {
             .tx
             .try_send(BackfillRequest { pubkeys })
             .expect("failed to prefill test backfill queue");
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestBackfillHandle {
+    pub handle: InitialAccountBackfillHandle,
+    _rx: tokio::sync::mpsc::Receiver<BackfillRequest>,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestBackfillHandle {
+    type Target = InitialAccountBackfillHandle;
+    fn deref(&self) -> &Self::Target {
+        &self.handle
     }
 }
 

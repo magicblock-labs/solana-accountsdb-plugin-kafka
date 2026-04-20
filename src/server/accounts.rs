@@ -265,9 +265,9 @@ mod tests {
     #[test]
     fn add_accounts_enqueues_all_new_keys() {
         let subs = AccountSubscriptions::new();
-        let handle = InitialAccountBackfillHandle::new_test(4);
+        let test_handle = InitialAccountBackfillHandle::new_test(4);
 
-        let outcome = add_accounts(&subs, &handle, vec![pk(1), pk(2)]).unwrap();
+        let outcome = add_accounts(&subs, &test_handle, vec![pk(1), pk(2)]).unwrap();
 
         assert_eq!(outcome.accepted_count, 2);
         assert_eq!(outcome.newly_added_count, 2);
@@ -279,10 +279,10 @@ mod tests {
     #[test]
     fn add_accounts_counts_duplicates_without_readding() {
         let subs = AccountSubscriptions::new();
-        let handle = InitialAccountBackfillHandle::new_test(4);
+        let test_handle = InitialAccountBackfillHandle::new_test(4);
 
-        let _ = add_accounts(&subs, &handle, vec![pk(3)]).unwrap();
-        let outcome = add_accounts(&subs, &handle, vec![pk(3), pk(4), pk(4)]).unwrap();
+        let _ = add_accounts(&subs, &test_handle, vec![pk(3)]).unwrap();
+        let outcome = add_accounts(&subs, &test_handle, vec![pk(3), pk(4), pk(4)]).unwrap();
 
         assert_eq!(outcome.accepted_count, 3);
         assert_eq!(outcome.newly_added_count, 1);
@@ -292,10 +292,10 @@ mod tests {
     #[test]
     fn add_accounts_retries_previously_pending_backfills() {
         let subs = AccountSubscriptions::new();
-        let handle = InitialAccountBackfillHandle::new_test(4);
+        let test_handle = InitialAccountBackfillHandle::new_test(4);
         subs.mark_needs_backfill(&[pk(8), pk(9)]);
 
-        let outcome = add_accounts(&subs, &handle, vec![pk(10)]).unwrap();
+        let outcome = add_accounts(&subs, &test_handle, vec![pk(10)]).unwrap();
 
         assert_eq!(outcome.newly_added_count, 1);
         assert_eq!(outcome.retried_backfill_count, 2);
@@ -305,10 +305,10 @@ mod tests {
     #[test]
     fn add_accounts_re_marks_needs_backfill_when_queue_is_full() {
         let subs = AccountSubscriptions::new();
-        let handle = InitialAccountBackfillHandle::new_test(1);
-        handle.prefill_queue_for_test(vec![pk(50)]);
+        let test_handle = InitialAccountBackfillHandle::new_test(1);
+        test_handle.prefill_queue_for_test(vec![pk(50)]);
 
-        let error = add_accounts(&subs, &handle, vec![pk(51), pk(52)]).unwrap_err();
+        let error = add_accounts(&subs, &test_handle, vec![pk(51), pk(52)]).unwrap_err();
 
         match error {
             AddAccountsError::QueueFull(outcome) => {

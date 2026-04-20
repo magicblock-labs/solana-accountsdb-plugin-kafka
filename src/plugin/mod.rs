@@ -378,10 +378,10 @@ mod tests {
     #[test]
     fn restore_pubkeys_in_chunks_deduplicates_before_subscribing() {
         let subs = AccountSubscriptions::new();
-        let handle = InitialAccountBackfillHandle::new_test(8);
+        let test_handle = InitialAccountBackfillHandle::new_test(8);
 
         let summary =
-            restore_pubkeys_in_chunks(&subs, &handle, vec![pk(1), pk(1), pk(2), pk(2), pk(3)])
+            restore_pubkeys_in_chunks(&subs, &test_handle, vec![pk(1), pk(1), pk(2), pk(2), pk(3)])
                 .unwrap();
 
         assert_eq!(summary.deduplicated_count, 3);
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn restore_pubkeys_in_chunks_handles_chunk_boundaries() {
         let subs = AccountSubscriptions::new();
-        let handle = InitialAccountBackfillHandle::new_test(8);
+        let test_handle = InitialAccountBackfillHandle::new_test(8);
         let pubkeys = (0..=INIT_TRACKING_RESTORE_CHUNK_SIZE)
             .map(|index| {
                 let mut pubkey = [0_u8; 32];
@@ -406,7 +406,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let summary = restore_pubkeys_in_chunks(&subs, &handle, pubkeys).unwrap();
+        let summary = restore_pubkeys_in_chunks(&subs, &test_handle, pubkeys).unwrap();
 
         assert_eq!(
             summary.deduplicated_count,
@@ -419,10 +419,10 @@ mod tests {
     #[test]
     fn restore_pubkeys_in_chunks_aborts_when_queue_is_full() {
         let subs = AccountSubscriptions::new();
-        let handle = InitialAccountBackfillHandle::new_test(1);
-        handle.prefill_queue_for_test(vec![pk(9)]);
+        let test_handle = InitialAccountBackfillHandle::new_test(1);
+        test_handle.prefill_queue_for_test(vec![pk(9)]);
 
-        let error = restore_pubkeys_in_chunks(&subs, &handle, vec![pk(7), pk(8)]);
+        let error = restore_pubkeys_in_chunks(&subs, &test_handle, vec![pk(7), pk(8)]);
 
         assert!(error.is_err());
         assert_eq!(subs.needs_backfill_count(), 2);
