@@ -65,14 +65,15 @@ pub(crate) fn add_accounts(
         result.active_count
     );
 
-    let mut to_enqueue = result.newly_added.clone();
+    let newly_added_count = result.newly_added.len();
+    let mut to_enqueue = result.newly_added;
     let pending_backfill = subs.drain_needs_backfill();
     to_enqueue.extend_from_slice(&pending_backfill);
 
     let base_outcome = AddAccountsOutcome {
         active_count: result.active_count,
         accepted_count,
-        newly_added_count: result.newly_added.len(),
+        newly_added_count,
         retried_backfill_count: pending_backfill.len(),
         duplicate_count: result.duplicate_count,
         needs_backfill_count: 0,
