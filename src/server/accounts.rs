@@ -120,15 +120,9 @@ pub async fn handle_post_accounts(
             result.duplicate_count,
             result.active_count
         );
-        return json_response(
+        return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            &AccountsResponse {
-                active_count: result.active_count,
-                accepted_count,
-                newly_added_count: result.newly_added.len(),
-                retried_backfill_count: pending_backfill.len(),
-                duplicate_count: result.duplicate_count,
-            },
+            "backfill queue full, retry later",
         );
     }
 
